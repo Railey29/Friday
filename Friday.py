@@ -821,12 +821,6 @@ async def shutdown_event():
 
 if __name__ == "__main__":
     import uvicorn
-    
-    logger.info("Starting FRIDAY Voice Assistant Server...")
-    
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8000,
-        log_level="info"
-    )
+    # Run the refactored app from app.main
+    logger.info("Starting FRIDAY Voice Assistant Server (MVC)...")
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, log_level="info")
