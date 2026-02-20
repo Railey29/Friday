@@ -7,6 +7,8 @@ import threading
 import platform
 import psutil
 import logging
+import re
+import urllib.parse
 from datetime import datetime
 from typing import Dict, Callable
 
@@ -30,6 +32,227 @@ def run(cmd: list[str]) -> bool:
     except Exception as e:
         logger.error("run() failed: %s", e)
         return False
+
+
+# ─────────────────────────────────────────────
+# Search Functions
+# ─────────────────────────────────────────────
+
+def search_google(query: str):
+    """Search Google for a given query."""
+    encoded = urllib.parse.quote(query)
+    url = f"https://www.google.com/search?q={encoded}"
+    speak(f"Searching Google for {query}, sir.")
+    webbrowser.open(url)
+
+def search_youtube(query: str):
+    """Search YouTube for a given query."""
+    encoded = urllib.parse.quote(query)
+    url = f"https://www.youtube.com/results?search_query={encoded}"
+    speak(f"Searching YouTube for {query}, sir.")
+    webbrowser.open(url)
+
+def play_music(query: str):
+    """Play music on YouTube."""
+    encoded = urllib.parse.quote(query)
+    url = f"https://www.youtube.com/results?search_query={encoded}"
+    speak(f"Playing {query} on YouTube, sir.")
+    webbrowser.open(url)
+
+def search_spotify(query: str):
+    """Search Spotify for a given query."""
+    encoded = urllib.parse.quote(query)
+    url = f"https://open.spotify.com/search/{encoded}"
+    speak(f"Searching Spotify for {query}, sir.")
+    webbrowser.open(url)
+
+def search_reddit(query: str):
+    """Search Reddit for a given query."""
+    encoded = urllib.parse.quote(query)
+    url = f"https://www.reddit.com/search/?q={encoded}"
+    speak(f"Searching Reddit for {query}, sir.")
+    webbrowser.open(url)
+
+def search_github(query: str):
+    """Search GitHub for a given query."""
+    encoded = urllib.parse.quote(query)
+    url = f"https://github.com/search?q={encoded}"
+    speak(f"Searching GitHub for {query}, sir.")
+    webbrowser.open(url)
+
+
+# ─────────────────────────────────────────────
+# Pending Action Handler
+# Resolves follow-up queries after clarification prompts.
+#
+# Flow example:
+#   User:   "search"
+#   FRIDAY: "Ano ang isesearch ko para sa iyo, sir?"
+#           → state.pending_action = "search_google"
+#   User:   "kabinalismo"
+#   FRIDAY: "Searching Google for kabinalismo, sir."
+# ─────────────────────────────────────────────
+
+def _resolve_pending_action(command_text: str) -> bool:
+    """
+    If state.pending_action is set, treat the current command_text as
+    the answer/query and execute the stored action.
+    Returns True if a pending action was resolved.
+    """
+    pending = getattr(state, "pending_action", None)
+    if not pending:
+        return False
+
+    # Clear immediately so it doesn't loop
+    state.pending_action = None
+    query = command_text.strip()
+
+    if pending == "search_google":
+        search_google(query)
+        return True
+    elif pending == "search_youtube":
+        search_youtube(query)
+        return True
+    elif pending == "play_music":
+        play_music(query)
+        return True
+    elif pending == "search_spotify":
+        search_spotify(query)
+        return True
+    elif pending == "search_reddit":
+        search_reddit(query)
+        return True
+    elif pending == "search_github":
+        search_github(query)
+        return True
+
+    return False
+
+
+# ─────────────────────────────────────────────
+# Dynamic Search Command Parser
+# Handles: "search X", "search X on google/youtube/spotify"
+#          "play X", "play X on spotify/youtube"
+#          "search X and play Y", "search X then play Y"
+#          bare "search" / "play" / "play music" → asks clarification
+# ─────────────────────────────────────────────
+
+def _parse_and_execute_search(command_lower: str) -> bool:
+    """
+    Parses flexible search/play commands and executes them.
+    Returns True if a search action was performed or clarification was asked.
+
+    Supported patterns:
+      - "search kabinalismo"
+      - "search kabinalismo on youtube / google / spotify / reddit / github"
+      - "play sinta by moonstar88"
+      - "play music kabinalismo"
+      - "play sinta on spotify / youtube"
+      - "search kabinalismo and play the music"
+      - "search kabinalismo then play sinta"
+      - bare "search"           → asks "Ano ang isesearch ko para sa iyo, sir?"
+      - bare "play" / "play music" → asks "Anong kanta ang ipe-play ko, sir?"
+      - bare "youtube search"   → asks "Ano ang hahanaping ko sa YouTube, sir?"
+    """
+
+    # ── Pattern: "search X and/then play Y" / "search X and play the music" ──
+    m = re.search(
+        r"search\s+(.+?)\s+(?:and|then)\s+play(?:\s+(?:the\s+)?(?:music|song))?\s*(.*)",
+        command_lower
+    )
+    if m:
+        search_query = m.group(1).strip()
+        play_query   = m.group(2).strip() or search_query  # fallback: same as search
+        speak(f"Searching for {search_query} and playing {play_query}, sir.")
+        webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote(search_query)}")
+        import time; time.sleep(1)
+        webbrowser.open(f"https://www.youtube.com/results?search_query={urllib.parse.quote(play_query)}")
+        return True
+
+    # ── Pattern: "play X on spotify" ─────────────────────────────────────────
+    m = re.search(r"play\s+(.+?)\s+on\s+spotify", command_lower)
+    if m:
+        search_spotify(m.group(1).strip())
+        return True
+
+    # ── Pattern: "play X on youtube" ─────────────────────────────────────────
+    m = re.search(r"play\s+(.+?)\s+on\s+youtube", command_lower)
+    if m:
+        play_music(m.group(1).strip())
+        return True
+
+    # ── Pattern: "search X on youtube" ───────────────────────────────────────
+    m = re.search(r"search\s+(.+?)\s+on\s+youtube", command_lower)
+    if m:
+        search_youtube(m.group(1).strip())
+        return True
+
+    # ── Pattern: "search X on spotify" ───────────────────────────────────────
+    m = re.search(r"search\s+(.+?)\s+on\s+spotify", command_lower)
+    if m:
+        search_spotify(m.group(1).strip())
+        return True
+
+    # ── Pattern: "search X on reddit" ────────────────────────────────────────
+    m = re.search(r"search\s+(.+?)\s+on\s+reddit", command_lower)
+    if m:
+        search_reddit(m.group(1).strip())
+        return True
+
+    # ── Pattern: "search X on github" ────────────────────────────────────────
+    m = re.search(r"search\s+(.+?)\s+on\s+github", command_lower)
+    if m:
+        search_github(m.group(1).strip())
+        return True
+
+    # ── Pattern: "search X on google" / "google X" ───────────────────────────
+    m = re.search(r"(?:search\s+(.+?)\s+on\s+google|^google\s+(.+))", command_lower)
+    if m:
+        query = (m.group(1) or m.group(2)).strip()
+        search_google(query)
+        return True
+
+    # ── Pattern: "search X" with actual query (default → Google) ─────────────
+    m = re.search(r"^search\s+(.+)", command_lower)
+    if m:
+        query = m.group(1).strip()
+        if query:
+            search_google(query)
+            return True
+
+    # ── Pattern: bare "search" with no query → ask clarification ─────────────
+    if re.match(r"^search\s*$", command_lower):
+        speak("Ano ang isesearch ko para sa iyo, sir?")
+        state.pending_action = "search_google"
+        return True
+
+    # ── Pattern: bare "play" / "play music" / "play song" → ask clarification ─
+    if re.match(r"^play\s*(music|song|a\s+song)?\s*$", command_lower):
+        speak("Anong kanta ang ipe-play ko, sir?")
+        state.pending_action = "play_music"
+        return True
+
+    # ── Pattern: "play X" with actual query ──────────────────────────────────
+    m = re.search(r"^play\s+(?:music|song|the\s+song)?\s*(.+)", command_lower)
+    if m:
+        query = m.group(1).strip()
+        if query:
+            play_music(query)
+            return True
+
+    # ── Pattern: "youtube search X" / "look up X" ────────────────────────────
+    m = re.search(r"(?:youtube\s+search|look\s+up)\s+(.+)", command_lower)
+    if m:
+        search_youtube(m.group(1).strip())
+        return True
+
+    # ── Pattern: bare "youtube search" / "look up" → ask clarification ───────
+    if re.match(r"^(?:youtube\s+search|look\s+up)\s*$", command_lower):
+        speak("Ano ang hahanaping ko sa YouTube, sir?")
+        state.pending_action = "search_youtube"
+        return True
+
+    return False
 
 
 # ─────────────────────────────────────────────
@@ -195,7 +418,6 @@ def open_calculator():
 
 def open_explorer():
     speak("Opening File Explorer, sir.")
-    # Win+E is the fastest shortcut for File Explorer
     threading.Thread(target=lambda: _win_shortcut(["win", "e"]), daemon=True).start()
 
 def open_paint():
@@ -204,7 +426,6 @@ def open_paint():
 
 def open_task_manager():
     speak("Opening Task Manager, sir.")
-    # Ctrl+Shift+Esc is the direct shortcut
     threading.Thread(target=lambda: pyautogui.hotkey("ctrl", "shift", "esc"), daemon=True).start()
 
 def open_control_panel():
@@ -213,7 +434,6 @@ def open_control_panel():
 
 def open_settings():
     speak("Opening Settings, sir.")
-    # Win+I is the direct shortcut for Settings
     threading.Thread(target=lambda: _win_shortcut(["win", "i"]), daemon=True).start()
 
 def open_cmd():
@@ -230,7 +450,6 @@ def open_vscode():
 
 def open_snipping_tool():
     speak("Opening Snipping Tool, sir.")
-    # Win+Shift+S opens Snip & Sketch directly
     threading.Thread(target=lambda: pyautogui.hotkey("win", "shift", "s"), daemon=True).start()
 
 def open_word():
@@ -528,7 +747,7 @@ COMMANDS: Dict[str, Callable] = {
     # News
     "open news":            open_news,
 
-    # Windows Apps (keypress-based)
+    # Windows Apps
     "open notepad":             open_notepad,
     "notepad":                  open_notepad,
     "open calculator":          open_calculator,
@@ -658,6 +877,16 @@ def _execute_command_silent(command_text: str) -> bool:
     logger.info("[SILENT COMMAND]: %s", command_text)
     state.last_command = command_text
     command_lower = command_text.lower().strip()
+
+    # ── 0. Resolve any pending clarification first ────────────────────────────
+    if _resolve_pending_action(command_lower):
+        return True
+
+    # ── 1. Try dynamic search/play parser ────────────────────────────────────
+    if _parse_and_execute_search(command_lower):
+        return True
+
+    # ── 2. Static COMMANDS dict ───────────────────────────────────────────────
     sorted_commands = sorted(COMMANDS.items(), key=lambda x: len(x[0]), reverse=True)
 
     for keyword, action in sorted_commands:
@@ -688,6 +917,8 @@ def _execute_command_silent(command_text: str) -> bool:
 
     logger.info("No command matched (silent) for: %s", command_lower)
     return False
+
+
 # ─────────────────────────────────────────────
 # Main Executor
 # ─────────────────────────────────────────────
@@ -697,8 +928,20 @@ def execute_command(command_text: str) -> bool:
     state.last_command = command_text
     command_lower = command_text.lower().strip()
 
+    # ── 0. Resolve pending clarification FIRST ────────────────────────────────
+    # e.g. FRIDAY asked "Ano ang isesearch ko para sa iyo, sir?"
+    #      User replies "kabinalismo" → this handles it
+    if _resolve_pending_action(command_lower):
+        return True
+
+    # ── 1. Try dynamic search/play parser ────────────────────────────────────
+    # Handles: "search X", "play X", "search X and play Y",
+    #          bare "search"/"play" → asks clarification
+    if _parse_and_execute_search(command_lower):
+        return True
+
+    # ── 2. Fall back to static COMMANDS dict ─────────────────────────────────
     # Sort longest keyword first → most specific match wins
-    # e.g. "open google drive" matched before "open google"
     sorted_commands = sorted(COMMANDS.items(), key=lambda x: len(x[0]), reverse=True)
 
     for keyword, action in sorted_commands:

@@ -17,6 +17,8 @@ class SystemState:
         self.start_time: datetime = datetime.now()
         self.awake_duration: int = 30
         self.speak_func = None
+        self.pending_action: str | None = None  # For follow-up clarification prompts
+                                                 # e.g. after FRIDAY asks "Ano isesearch sir?"
 
     def is_awake(self) -> bool:
         if not self.awake:
@@ -53,6 +55,7 @@ class SystemState:
         self.is_volume_on = True
         self.last_command = ""
         self.awake = False
+        self.pending_action = None  # Also clear pending action on reset
 
 
 class CommandDeduplicator:
