@@ -647,6 +647,48 @@ COMMANDS: Dict[str, Callable] = {
 
 
 # ─────────────────────────────────────────────
+# Silent Executor (for Gemini-powered responses)
+# ─────────────────────────────────────────────
+
+def _execute_command_silent(command_text: str) -> bool:
+    """Execute command WITHOUT the built-in speak — Gemini will speak instead."""
+    import app.services.tts as tts_module
+    import app.services.actions as actions_module
+
+    logger.info("[SILENT COMMAND]: %s", command_text)
+    state.last_command = command_text
+    command_lower = command_text.lower().strip()
+    sorted_commands = sorted(COMMANDS.items(), key=lambda x: len(x[0]), reverse=True)
+
+    for keyword, action in sorted_commands:
+        if keyword in command_lower:
+            try:
+                original_speak = tts_module.speak
+
+                def silent_speak(text):
+                    pass  # no-op, Gemini already spoke
+
+                tts_module.speak = silent_speak
+                actions_module.speak = silent_speak
+
+                threading.Thread(target=action, daemon=True).start()
+
+                def restore_speak():
+                    import time
+                    time.sleep(1)
+                    tts_module.speak = original_speak
+                    actions_module.speak = original_speak
+
+                threading.Thread(target=restore_speak, daemon=True).start()
+                return True
+
+            except Exception as e:
+                logger.error("Silent execute error '%s': %s", keyword, e)
+                return False
+
+    logger.info("No command matched (silent) for: %s", command_lower)
+    return False
+# ─────────────────────────────────────────────
 # Main Executor
 # ─────────────────────────────────────────────
 

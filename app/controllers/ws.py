@@ -7,6 +7,7 @@ from app.models.state import state, deduplicator
 from app.services.stats import get_system_stats
 from app.services.actions import execute_command
 from app.services.tts import speak
+from app.services.gemini_service import ask_gemini  # ← ADDED
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +68,37 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
 
                 if state.is_awake():
-                    executed = execute_command(command)
-                    if executed:
+                    # ── GEMINI INTEGRATION START ──
+                    loop = asyncio.get_event_loop()
+                    gemini_result = await loop.run_in_executor(None, ask_gemini, command)
+
+                    if gemini_result.get("has_command") and gemini_result.get("command"):
+                        # Gemini found a matching FRIDAY command
+                        mapped_command = gemini_result["command"]
+                        logger.info("Gemini mapped '%s' → '%s'", command, mapped_command)
+                        executed = execute_command(mapped_command)
+                        if executed:
+                            state.extend_awake()
+                        await websocket.send_json({
+                            "success": True,
+                            "executed": executed,
+                            "mapped": mapped_command
+                        })
+                    else:
+                        # Gemini answered directly (tanong, chika, walang match na command)
+                        friday_response = gemini_result.get(
+                            "friday_response",
+                            "I'm not sure how to help with that, sir."
+                        )
+                        speak(friday_response)
                         state.extend_awake()
-                    await websocket.send_json({"success": True, "executed": executed})
+                        await websocket.send_json({
+                            "success": True,
+                            "executed": False,
+                            "response": friday_response
+                        })
+                    # ── GEMINI INTEGRATION END ──
+
                 else:
                     await websocket.send_json({"success": True, "message": "Waiting for wake word ('Friday')"})
 

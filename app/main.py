@@ -1,6 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
+from dotenv import load_dotenv  # ← ADDED
+
+load_dotenv()  # ← ADDED (dapat nasa taas, bago mag-import ng ibang services)
 
 from app.controllers import api as api_controller
 from app.controllers import ws as ws_controller
