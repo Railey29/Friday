@@ -1,36 +1,75 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+<div align="center">
 
-## Getting Started
+# 🤖 FRIDAY — Frontend
 
-First, run the development server:
+**The UI interface for the FRIDAY Voice Assistant**
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)
+
+</div>
+
+---
+
+## ⚙️ Configuration (Important!)
+
+Before running the frontend, you need to set the **IP address of the machine running the backend.**
+
+Open this file:
+
+```
+src/config.ts
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Edit these values:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```typescript
+export const BACKEND_URL = "http://YOUR_IP_HERE:8000";
+export const API_URL = "http://YOUR_IP_HERE:8000/api";
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### 🔍 How to find your IP address
 
-## Learn More
+**On Windows**, open Command Prompt and run:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+ipconfig
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Look for **IPv4 Address** under your active network adapter.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Example:
 
-## Deploy on Vercel
+```
+IPv4 Address. . . . . . . . . . . : 192.168.1.100
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Then update `config.ts`:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```typescript
+export const BACKEND_URL = "http://192.168.1.100:8000";
+export const API_URL = "http://192.168.1.100:8000/api";
+```
+
+---
+
+## 🚀 Running the Frontend
+
+Make sure the **FRIDAY Backend is running first**, then:
+
+```bash
+npm install
+npm run dev
+```
+
+---
+
+## 📋 Requirements
+
+- Node.js >= 16
+- FRIDAY Backend running on the same network
+
+---
+
+## 📄 License
+
+MIT License — Created by [Railey29](https://github.com/Railey29)
