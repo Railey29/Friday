@@ -5,6 +5,30 @@ import { useState, useEffect, useRef } from "react";
 import type { Stats } from "../models/status";
 import { API_URL } from "../models/status";
 
+export type AlertItem = {
+  id: string;
+  level: string;
+  title: string;
+  message?: string;
+  createdAt?: string;
+  expiresAt?: string;
+  meta?: Record<string, unknown>;
+};
+
+export type ReminderItem = {
+  id: string;
+  title: string;
+  dueAt: string;
+  createdAt?: string;
+  repeat?: string;
+  done?: boolean;
+};
+
+export type VisionStatus = {
+  airMouse: boolean;
+  signLauncher: boolean;
+};
+
 export function useHomeController() {
   const [isPoweredOn, setIsPoweredOn] = useState(true);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -13,6 +37,12 @@ export function useHomeController() {
   const [lastCommand, setLastCommand] = useState("");
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState("");
+  const [alerts, setAlerts] = useState<AlertItem[]>([]);
+  const [reminders, setReminders] = useState<ReminderItem[]>([]);
+  const [vision, setVision] = useState<VisionStatus>({
+    airMouse: false,
+    signLauncher: false,
+  });
   const [stats, setStats] = useState<Stats>({
     battery: 87,
     temperature: 42,
@@ -40,13 +70,18 @@ export function useHomeController() {
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          setIsPoweredOn(Boolean(data.isPoweredOn));
           setIsSpeaking(Boolean(data.isSpeaking));
-          setIsMicOn(Boolean(data.isMicOn));
-          setIsVolumeOn(Boolean(data.isVolumeOn));
           setLastCommand(String(data.lastCommand || ""));
-          setStats(data.stats || stats);
-        } catch (err) {
+          setStats((prev) => data.stats || prev);
+          if (Array.isArray(data.alerts)) setAlerts(data.alerts);
+          if (Array.isArray(data.reminders)) setReminders(data.reminders);
+          if (data.vision && typeof data.vision === "object") {
+            setVision({
+              airMouse: Boolean((data.vision as any).airMouse),
+              signLauncher: Boolean((data.vision as any).signLauncher),
+            });
+          }
+        } catch {
           // ignore parse errors
         }
       };
@@ -70,23 +105,31 @@ export function useHomeController() {
   }, []);
 
   const handleToggle = async (type: "power" | "mic" | "volume") => {
-    let newState = false;
-
+    let newState: boolean;
     switch (type) {
       case "power":
         newState = !isPoweredOn;
-        setIsPoweredOn(newState);
         break;
       case "mic":
         newState = !isMicOn;
-        setIsMicOn(newState);
         break;
       case "volume":
         newState = !isVolumeOn;
+        break;
+      default:
+        return;
+    }
+    switch (type) {
+      case "power":
+        setIsPoweredOn(newState);
+        break;
+      case "mic":
+        setIsMicOn(newState);
+        break;
+      case "volume":
         setIsVolumeOn(newState);
         break;
     }
-
     try {
       await fetch(`${API_URL}/${type}`, {
         method: "POST",
@@ -111,23 +154,42 @@ export function useHomeController() {
     }
   };
 
+  const toggleAirMouse = async () => {
+    try {
+      const endpoint = vision.airMouse ? "airmouse/stop" : "airmouse/start";
+      await fetch(`${API_URL}/${endpoint}`, { method: "POST" });
+    } catch (err) {
+      console.error("AirMouse toggle failed:", err);
+    }
+  };
+
+  const toggleSignLauncher = async () => {
+    try {
+      const endpoint = vision.signLauncher
+        ? "signlauncher/stop"
+        : "signlauncher/start";
+      await fetch(`${API_URL}/${endpoint}`, { method: "POST" });
+    } catch (err) {
+      console.error("SignLauncher toggle failed:", err);
+    }
+  };
+
+  // ─────────────────────────────────────────────
+  // Send Command — WebSocket or HTTP fallback
+  // ─────────────────────────────────────────────
   const sendCommand = async (text: string) => {
     const trimmedText = text.trim();
     if (!trimmedText) return;
-    // Prefer sending commands over the websocket when connected
     try {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ text: trimmedText }));
         return;
       }
-
-      // Fallback to HTTP POST
       const response = await fetch(`${API_URL}/command`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: trimmedText }),
       });
-
       const textBody = await response.text();
       if (!response.ok) {
         console.warn(
@@ -136,18 +198,34 @@ export function useHomeController() {
           textBody,
         );
       }
-
-      try {
-        const data = JSON.parse(textBody);
-        console.log("Command response:", data);
-      } catch (parseErr) {
-        console.warn(
-          "Expected JSON but received non-JSON response for /command:",
-          textBody,
-        );
-      }
     } catch (err) {
       console.error("Send command failed:", err);
+    }
+  };
+
+  // ─────────────────────────────────────────────
+  // Add Reminder Manually
+  // ─────────────────────────────────────────────
+  const addReminderManual = async (title: string, dueAt: string) => {
+    try {
+      await fetch(`${API_URL}/reminders`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, dueAt, repeat: "none" }),
+      });
+    } catch (err) {
+      console.error("Add reminder failed:", err);
+    }
+  };
+
+  // ─────────────────────────────────────────────
+  // Delete Reminder
+  // ─────────────────────────────────────────────
+  const deleteReminder = async (id: string) => {
+    try {
+      await fetch(`${API_URL}/reminders/${id}`, { method: "DELETE" });
+    } catch (err) {
+      console.error("Delete reminder failed:", err);
     }
   };
 
@@ -168,7 +246,7 @@ export function useHomeController() {
     }
 
     const recognition = new SpeechRecognition();
-    recognition.lang = "en-US";
+    recognition.lang = "en-PH";
     recognition.continuous = true;
     recognition.interimResults = true;
 
@@ -204,31 +282,23 @@ export function useHomeController() {
         }
       }
 
-      if (interimTranscript) {
-        setTranscript(interimTranscript);
-      }
+      if (interimTranscript) setTranscript(interimTranscript);
 
       if (finalTranscript) {
         const trimmedFinal = finalTranscript.trim();
         setTranscript(trimmedFinal);
         latestFinalTranscriptRef.current = trimmedFinal;
 
-        if (sendDelayTimerRef.current) {
-          clearTimeout(sendDelayTimerRef.current);
-        }
-
+        if (sendDelayTimerRef.current) clearTimeout(sendDelayTimerRef.current);
         sendDelayTimerRef.current = setTimeout(() => {
           const commandToSend = latestFinalTranscriptRef.current;
           if (commandToSend) sendCommand(commandToSend);
-        }, 3000);
+        }, 1500);
 
-        if (autoStopTimerRef.current) {
-          clearTimeout(autoStopTimerRef.current);
-        }
-
+        if (autoStopTimerRef.current) clearTimeout(autoStopTimerRef.current);
         autoStopTimerRef.current = setTimeout(() => {
           if (recognitionRef.current) recognitionRef.current.stop();
-        }, 5000);
+        }, 6000);
       }
     };
 
@@ -239,6 +309,11 @@ export function useHomeController() {
     if (recognitionRef.current) recognitionRef.current.stop();
     if (sendDelayTimerRef.current) clearTimeout(sendDelayTimerRef.current);
     if (autoStopTimerRef.current) clearTimeout(autoStopTimerRef.current);
+  };
+
+  const clearTranscript = () => {
+    setTranscript("");
+    latestFinalTranscriptRef.current = "";
   };
 
   useEffect(() => {
@@ -257,10 +332,19 @@ export function useHomeController() {
     lastCommand,
     isListening,
     transcript,
+    alerts,
+    reminders,
+    vision,
     stats,
     handleToggle,
     handleSpeak,
     handleListen,
     handleStopListening,
+    toggleAirMouse,
+    toggleSignLauncher,
+    sendCommand,
+    addReminderManual,
+    deleteReminder,
+    clearTranscript,
   } as const;
 }
