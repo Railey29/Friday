@@ -7,6 +7,7 @@ load_dotenv()  # ← ADDED (dapat nasa taas, bago mag-import ng ibang services)
 
 from app.controllers import api as api_controller
 from app.controllers import ws as ws_controller
+from app.services.reminders import scheduler as reminder_scheduler
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -29,8 +30,10 @@ app.include_router(ws_controller.router)
 @app.on_event("startup")
 async def startup_event():
     logger.info("FRIDAY Voice Assistant starting up...")
+    reminder_scheduler.start()
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("FRIDAY Voice Assistant shutting down...")
+    reminder_scheduler.stop()

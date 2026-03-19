@@ -1,0 +1,8 @@
+# Optional dependencies for vision-based features:
+# - Air Mouse & Air Click (MediaPipe + PyAutoGUI)
+# - Sign Launcher (OpenCV + MediaPipe)
+
+opencv-python>=4.8
+mediapipe>=0.10
+pyautogui>=0.9
+

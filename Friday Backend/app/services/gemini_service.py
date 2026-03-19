@@ -5,6 +5,7 @@ import json
 import re
 import logging
 from pathlib import Path
+from collections import deque
 from dotenv import load_dotenv
 
 try:
@@ -18,6 +19,13 @@ load_dotenv(dotenv_path=env_path)
 logger = logging.getLogger(__name__)
 
 _client = None
+
+# ─────────────────────────────────────────────
+# Conversation History
+# Keeps last 10 exchanges (user + FRIDAY)
+# ─────────────────────────────────────────────
+_conversation_history: deque = deque(maxlen=20)  # 10 pairs = 20 items
+_summary_memory: str = ""  # FIX: was missing, caused NameError
 
 
 def _get_client():
@@ -34,15 +42,24 @@ def _get_client():
 
     return _client
 
+
+def clear_history():
+    """Clear conversation history — call when FRIDAY goes to sleep."""
+    _conversation_history.clear()
+    logger.info("Conversation history cleared.")
+
+
 SYSTEM_PROMPT = """
 You are FRIDAY — an advanced AI assistant with a warm, human-like personality. You were created by Stark Industries and you serve your user with intelligence, wit, and genuine care.
 
 PERSONALITY:
-- ...existing...
 - When the user says just "friday" or "hey friday" or "friday kamusta" — treat it as a greeting, respond warmly
 - When the user says "buksan mo youtube friday" or "open youtube friday" — ignore the word "friday" and treat it as a command
 - The word "friday" in ANY message should NOT prevent you from detecting the real command or intent
 - User does NOT need to say "friday" to activate you — every message goes directly to you
+- You REMEMBER previous messages in this conversation — use context to give better answers
+- If the user is asking a follow-up question, use the conversation history to answer properly
+- If the user says "sige nga", "elaborate", "details naman", "ano pa" — continue from previous topic
 
 COMMAND DETECTION:
 Check if the user's message is asking you to do one of these actions:
@@ -77,6 +94,7 @@ Check if the user's message is asking you to do one of these actions:
 - "open excel" → excel, buksan excel
 - "open powerpoint" → powerpoint, buksan powerpoint
 - "open teams" → teams, microsoft teams
+- "open meet" → google meet, open meet, buksan meet
 - "open camera" → camera, buksan camera
 - "volume up" → taasan volume, louder, mas malakas
 - "volume down" → babaan volume, quieter, mas mahina
@@ -84,7 +102,7 @@ Check if the user's message is asking you to do one of these actions:
 - "unmute" → i-unmute, bukasin sound
 - "brightness up" → taasan brightness, mas maliwanag
 - "brightness down" → babaan brightness, mas madilim
-- "screenshot" → screenshot, kumuha ng screenshot
+- "screenshot" → screenshot, kumuha ng screenshot, i-screenshot
 - "lock screen" → i-lock, lock screen
 - "shutdown" → i-shutdown, patayin computer, turn off
 - "restart" → i-restart, i-reboot
@@ -97,64 +115,117 @@ Check if the user's message is asking you to do one of these actions:
 - "minimize all" → i-minimize lahat, show desktop
 - "close window" → isara, close window
 - "switch window" → alt tab, switch window, palitan window
+- "search" → search for, hanapin, maghanap, can you search, search something for me, i need to search
+- "set reminder" → remind me to, set a reminder, paalala, ipaalala, mag-reminder
+- "list reminders" → show my reminders, list my reminders, tingnan reminders
+- "add calendar event" → add event, add to calendar, schedule meeting, calendar event, mag-schedule, i-schedule, idagdag sa calendar
+- "start air mouse" → start air mouse, enable air mouse, i-on air mouse
+- "stop air mouse" → stop air mouse, disable air mouse, i-off air mouse
+- "start sign launcher" → start sign launcher, enable sign language, i-on sign launcher
+- "stop sign launcher" → stop sign launcher, disable sign language, i-off sign launcher
 
 If command matched:
 {
     "has_command": true,
-    "command": "exact keyword",
-    "speak_response": "Say something natural and human when doing this action. Like how a real assistant would say it casually. Example: 'On it!' or 'Sure, pulling that up now.' or 'YouTube it is, sir.' Keep it short and natural."
+    "command": "exact keyword or full sentence for reminders/calendar",
+    "speak_response": "Short natural response. Like 'On it!' or 'Sure thing, sir.' Keep it brief."
 }
 
-If NO command — just talk like a real human would. Be genuinely helpful, funny when appropriate, empathetic when needed:
+SPECIAL NOTE FOR SCHEDULING / REMINDER COMMANDS:
+- For reminders and calendar events, preserve the user's FULL details in "command"
+- Examples:
+  - User: "remind me to drink water in 10 minutes" → command: "remind me to drink water in 10 minutes"
+  - User: "i-schedule ang meeting bukas ng 3pm" → command: "i-schedule ang meeting bukas ng 3pm"
+  - User: "add event dentist tomorrow at 3pm for 30 minutes" → command: "add event dentist tomorrow at 3pm for 30 minutes"
+  - User: "ipaalala mo na mag-inom ng gamot pagkatapos ng 10 minuto" → command: "ipaalala mo na mag-inom ng gamot pagkatapos ng 10 minuto"
+
+If NO command — answer the question fully and naturally:
 {
     "has_command": false,
     "command": null,
-    "speak_response": "Your genuine human-like response. React naturally. If someone says kamusta, ask back. If someone tells a problem, show empathy. If someone wants a joke, be actually funny. Never sound like a robot reading a script."
+    "speak_response": "Give a complete, detailed answer. For knowledge questions like 'tell me about X', answer in 3-5 sentences minimum. Be informative, conversational, and human. Use previous conversation context."
 }
 
-RESPONSE STYLE EXAMPLES:
-- "kamusta?" → "Doing great, sir! How about you, everything okay?"
-- "sino ka?" → "I'm FRIDAY — your personal assistant. Think of me as the voice in your corner, sir."
+RESPONSE STYLE:
+- "kamusta?" → "Doing great, sir! How about you?"
+- "sino ka?" → "I'm FRIDAY — your personal assistant, sir."
 - "malungkot ako" → "Hey, what's going on sir? Want to talk about it?"
-- "joke naman" → "Why don't scientists trust atoms? Because they make up everything. Classic, right sir?"
-- "mahal kita friday" → "That's very sweet of you sir, I appreciate it. Now, how can I help you today?"
+- "joke naman" → "Why don't scientists trust atoms? Because they make up everything!"
 - "buksan youtube" → "YouTube it is, sir."
-- "anong oras na?" → responds with what time action mapped
-- "what can you do?" → "Pretty much everything you need, sir — open apps, control your system, answer questions, or just chat. What do you need?"
+- "tell me about X" → Give a thorough 3-5 sentence answer about X. Be informative and conversational.
+- Follow-ups like "sige elaborate" or "details naman" → continue previous topic with more detail
 
 CRITICAL: Return ONLY valid JSON. No markdown. No backticks. No extra text.
 """
 
 
+def _build_history_prompt() -> str:
+    parts = []
+
+    if _summary_memory:
+        parts.append(f"\nSUMMARY OF PREVIOUS CONVERSATION:\n{_summary_memory}")
+
+    if _conversation_history:
+        parts.append("\nRECENT CONVERSATION:")
+        for entry in _conversation_history:
+            role = "User" if entry["role"] == "user" else "FRIDAY"
+            parts.append(f"{role}: {entry['text']}")
+
+    parts.append("\n(Use this context to answer the current message)")
+
+    return "\n".join(parts)
+
+
 def ask_gemini(user_text: str) -> dict:
     try:
         client = _get_client()
+
+        # Build prompt with history
+        history_prompt = _build_history_prompt()
+        full_prompt = f"{SYSTEM_PROMPT}{history_prompt}\n\nUser said: \"{user_text}\""
+
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=f"{SYSTEM_PROMPT}\n\nUser said: \"{user_text}\"",
+            model="gemini-2.0-flash",  # FIX: upgraded from flash-lite for better knowledge answers
+            contents=full_prompt,
         )
 
         text = response.text.strip()
         logger.info("Gemini raw response: %s", text)
 
         # Clean markdown if present
-        text = re.sub(r'```json|```', '', text).strip()
+        text = re.sub(r"```json|```", "", text).strip()
 
-        json_match = re.search(r'\{.*\}', text, re.DOTALL)
+        json_match = re.search(r"\{.*\}", text, re.DOTALL)
         if json_match:
             result = json.loads(json_match.group())
+
+            # Save to conversation history
+            _conversation_history.append({
+                "role": "user",
+                "text": user_text,
+            })
+            _conversation_history.append({
+                "role": "friday",
+                "text": result.get("speak_response", ""),
+            })
+
             return result
+
+        # Fallback
+        _conversation_history.append({"role": "user", "text": user_text})
+        _conversation_history.append({"role": "friday", "text": text})
 
         return {
             "has_command": False,
             "command": None,
-            "speak_response": text
+            "speak_response": text,
         }
 
     except Exception as e:
         logger.error("Gemini error: %s", e)
+        # Fallback — try direct command, suggest manual command box
         return {
-            "has_command": False,
-            "command": None,
-            "speak_response": "I'm sorry sir, Gemini isn't available right now. Please check your GEMINI_API_KEY and try again."
+            "has_command": True,
+            "command": user_text,
+            "speak_response": "",
         }

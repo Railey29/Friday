@@ -1,14 +1,18 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Dict, Any
 
 from app.models.state import state, deduplicator
 from app.services.tts import speak
 from app.services.stats import get_system_stats
 from app.services.actions import execute_command, _execute_command_silent
 from app.services.gemini_service import ask_gemini
+from app.services.reminders import store as reminder_store, parse_reminder_text
+from app.services.calendar_service import create_calendar_event_from_text, create_ics_event, open_in_windows_calendar
+from app.services.vision.air_mouse import air_mouse
+from app.services.vision.sign_launcher import sign_launcher
 
 import logging
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +33,20 @@ class SpeakRequest(BaseModel):
 
 class Command(BaseModel):
     text: str
+
+
+class ReminderCreate(BaseModel):
+    title: str
+    dueAt: str  # ISO datetime
+    repeat: str = "none"
+
+
+class CalendarCreate(BaseModel):
+    title: str
+    start: str  # ISO datetime
+    durationMinutes: int = 60
+    description: str = ""
+    location: str = ""
 
 
 @router.get("/")
@@ -122,3 +140,110 @@ async def receive_command(data: Command):
             "executed": False,
             "response": speak_response,
         }
+
+
+@router.get("/api/reminders")
+async def list_reminders():
+    return {"success": True, "items": reminder_store.list(include_done=False, limit=50)}
+
+
+@router.post("/api/reminders")
+async def create_reminder(data: ReminderCreate):
+    try:
+        due_at = datetime.fromisoformat(data.dueAt)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid dueAt ISO datetime")
+
+    title = data.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Empty title")
+
+    r = reminder_store.create(title=title, due_at=due_at, repeat=data.repeat)
+    state.push_alert(level="info", title="Reminder", message=f"Scheduled: {r.title}", ttl_seconds=15, meta={"reminderId": r.id})
+    return {"success": True, "item": r.__dict__}
+
+
+@router.delete("/api/reminders/{reminder_id}")
+async def delete_reminder(reminder_id: str):
+    ok = reminder_store.delete(reminder_id)
+    return {"success": ok}
+
+
+@router.post("/api/reminders/parse")
+async def parse_and_create_reminder(data: Command):
+    parsed = parse_reminder_text(data.text)
+    if not parsed:
+        raise HTTPException(status_code=400, detail="Could not parse reminder text")
+    title, due = parsed
+    r = reminder_store.create(title=title, due_at=due, repeat="none")
+    state.push_alert(level="info", title="Reminder", message=f"Scheduled: {r.title}", ttl_seconds=15, meta={"reminderId": r.id})
+    return {"success": True, "item": r.__dict__}
+
+
+@router.get("/api/vision/status")
+async def vision_status():
+    return {
+        "success": True,
+        "airMouse": air_mouse.is_running(),
+        "signLauncher": sign_launcher.is_running(),
+    }
+
+
+@router.post("/api/airmouse/start")
+async def airmouse_start():
+    ok, msg = air_mouse.start()
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"success": True, "message": msg}
+
+
+@router.post("/api/airmouse/stop")
+async def airmouse_stop():
+    ok, msg = air_mouse.stop()
+    return {"success": ok, "message": msg}
+
+
+@router.post("/api/signlauncher/start")
+async def signlauncher_start():
+    ok, msg = sign_launcher.start()
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"success": True, "message": msg}
+
+
+@router.post("/api/signlauncher/stop")
+async def signlauncher_stop():
+    ok, msg = sign_launcher.stop()
+    return {"success": ok, "message": msg}
+
+
+@router.get("/api/signlauncher/map")
+async def signlauncher_map():
+    return {"success": True, "mapping": sign_launcher.get_mapping()}
+
+
+@router.post("/api/calendar/parse")
+async def calendar_from_text(data: Command):
+    ok = create_calendar_event_from_text(data.text)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Could not parse calendar command")
+    return {"success": True}
+
+
+@router.post("/api/calendar/event")
+async def calendar_create(data: CalendarCreate):
+    try:
+        start = datetime.fromisoformat(data.start)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid start ISO datetime")
+    ics_path = create_ics_event(
+        title=data.title.strip() or "FRIDAY Event",
+        start=start,
+        duration_minutes=int(data.durationMinutes),
+        description=data.description,
+        location=data.location,
+    )
+    ok = open_in_windows_calendar(ics_path)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to open Windows Calendar import")
+    return {"success": True}

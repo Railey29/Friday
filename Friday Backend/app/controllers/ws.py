@@ -7,7 +7,10 @@ from app.models.state import state, deduplicator
 from app.services.stats import get_system_stats
 from app.services.actions import execute_command
 from app.services.tts import speak
-from app.services.gemini_service import ask_gemini  # ← ADDED
+from app.services.gemini_service import ask_gemini  # â† ADDED
+from app.services.reminders import store as reminder_store
+from app.services.vision.air_mouse import air_mouse
+from app.services.vision.sign_launcher import sign_launcher
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +24,7 @@ async def websocket_endpoint(websocket: WebSocket):
     async def sender():
         try:
             while True:
+                state.prune_alerts()
                 await websocket.send_json({
                     "isPoweredOn": state.is_powered_on,
                     "isSpeaking": state.is_speaking,
@@ -30,6 +34,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     "awake": state.is_awake(),
                     "awakeUntil": state.awake_until.isoformat() if state.awake_until else None,
                     "stats": get_system_stats(),
+                    "alerts": state.alerts,
+                    "reminders": reminder_store.list(include_done=False, limit=20),
+                    "vision": {
+                        "airMouse": air_mouse.is_running(),
+                        "signLauncher": sign_launcher.is_running(),
+                    },
                 })
                 await asyncio.sleep(1)
         except WebSocketDisconnect:
@@ -68,14 +78,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
 
                 if state.is_awake():
-                    # ── GEMINI INTEGRATION START ──
+                    # â”€â”€ GEMINI INTEGRATION START â”€â”€
                     loop = asyncio.get_event_loop()
                     gemini_result = await loop.run_in_executor(None, ask_gemini, command)
 
                     if gemini_result.get("has_command") and gemini_result.get("command"):
                         # Gemini found a matching FRIDAY command
                         mapped_command = gemini_result["command"]
-                        logger.info("Gemini mapped '%s' → '%s'", command, mapped_command)
+                        logger.info("Gemini mapped '%s' â†’ '%s'", command, mapped_command)
                         executed = execute_command(mapped_command)
                         if executed:
                             state.extend_awake()
@@ -87,8 +97,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     else:
                         # Gemini answered directly (tanong, chika, walang match na command)
                         friday_response = gemini_result.get(
-                            "friday_response",
-                            "I'm not sure how to help with that, sir."
+                            "speak_response",
+                            gemini_result.get(
+                                "friday_response",
+                                "I'm not sure how to help with that, sir."
+                            )
                         )
                         speak(friday_response)
                         state.extend_awake()
@@ -97,7 +110,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             "executed": False,
                             "response": friday_response
                         })
-                    # ── GEMINI INTEGRATION END ──
+                    # â”€â”€ GEMINI INTEGRATION END â”€â”€
 
                 else:
                     await websocket.send_json({"success": True, "message": "Waiting for wake word ('Friday')"})
@@ -118,3 +131,4 @@ async def websocket_endpoint(websocket: WebSocket):
         sender_task.cancel()
         receiver_task.cancel()
         return
+
