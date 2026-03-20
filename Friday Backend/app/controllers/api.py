@@ -5,7 +5,7 @@ from app.models.state import state, deduplicator
 from app.services.tts import speak
 from app.services.stats import get_system_stats
 from app.services.actions import execute_command, _execute_command_silent
-from app.services.gemini_service import ask_gemini
+from app.services.ai_router import ask_ai, get_ai_mode, set_ai_mode, is_searching
 from app.services.reminders import store as reminder_store, parse_reminder_text
 from app.services.calendar_service import create_calendar_event_from_text, create_ics_event, open_in_windows_calendar
 from app.services.vision.air_mouse import air_mouse
@@ -34,16 +34,17 @@ class SpeakRequest(BaseModel):
 class Command(BaseModel):
     text: str
 
+class AIModeToggle(BaseModel):
+    mode: str  # "general", "search", "command"
 
 class ReminderCreate(BaseModel):
     title: str
-    dueAt: str  # ISO datetime
+    dueAt: str
     repeat: str = "none"
-
 
 class CalendarCreate(BaseModel):
     title: str
-    start: str  # ISO datetime
+    start: str
     durationMinutes: int = 60
     description: str = ""
     location: str = ""
@@ -68,6 +69,8 @@ async def get_status():
         "lastCommand": state.last_command,
         "awake": state.is_awake(),
         "stats": get_system_stats(),
+        "aiMode": get_ai_mode(),
+        "isSearching": is_searching(),
     }
 
 
@@ -91,6 +94,30 @@ async def toggle_volume(data: VolumeToggle):
     return {"success": True, "isVolumeOn": state.is_volume_on}
 
 
+# ─────────────────────────────────────────────
+# AI Mode Toggle — 3 modes
+# ─────────────────────────────────────────────
+@router.get("/api/ai-mode")
+async def get_ai_mode_endpoint():
+    return {"success": True, "mode": get_ai_mode()}
+
+
+@router.post("/api/ai-mode")
+async def set_ai_mode_endpoint(data: AIModeToggle):
+    try:
+        set_ai_mode(data.mode)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    labels = {
+        "general": "General AI",
+        "search": "Search AI",
+        "command": "Command AI",
+    }
+    speak(f"Switched to {labels.get(data.mode, data.mode)}, sir.")
+    return {"success": True, "mode": get_ai_mode()}
+
+
 @router.post("/api/speak")
 async def speak_text(data: SpeakRequest):
     if not data.text.strip():
@@ -102,36 +129,45 @@ async def speak_text(data: SpeakRequest):
 @router.post("/api/command")
 async def receive_command(data: Command):
     command = data.text.lower().strip()
-    logger.info("Received /api/command POST, command=%s", command)
+    logger.info("Received /api/command POST, command=%s, ai_mode=%s", command, get_ai_mode())
 
     if not command:
         raise HTTPException(status_code=400, detail="Empty command")
 
+    # Block command while searching
+    if is_searching():
+        return {
+            "success": False,
+            "blocked": True,
+            "message": "Friday is currently searching, please wait...",
+        }
+
     if deduplicator.is_duplicate(command):
         return {"success": True, "duplicate": True, "message": "Duplicate command ignored"}
 
-    # FRIDAY is offline — only hard block
     if not state.is_powered_on:
         return {"success": False, "message": "FRIDAY is offline"}
 
-    # ── Everything goes to Gemini — no wake word needed, no sleep mode ──
-    gemini_result = ask_gemini(command)
-    speak_response = gemini_result.get("speak_response", "")
+    ai_result = ask_ai(command)
+    speak_response = ai_result.get("speak_response", "")
+    current_mode = get_ai_mode()
 
-    if gemini_result.get("has_command") and gemini_result.get("command"):
-        mapped_command = gemini_result["command"]
-        logger.info("Gemini mapped '%s' → '%s'", command, mapped_command)
-
+    # ── Command AI only — execute system commands ──
+    if current_mode == "command" and ai_result.get("has_command") and ai_result.get("command"):
+        mapped_command = ai_result["command"]
+        logger.info("Command AI mapped '%s' → '%s'", command, mapped_command)
         if speak_response:
             speak(speak_response)
-
         executed = _execute_command_silent(mapped_command)
         return {
             "success": True,
             "executed": executed,
             "mapped": mapped_command,
             "response": speak_response,
+            "aiMode": current_mode,
         }
+
+    # ── General / Search AI — conversation only ──
     else:
         if speak_response:
             speak(speak_response)
@@ -139,6 +175,7 @@ async def receive_command(data: Command):
             "success": True,
             "executed": False,
             "response": speak_response,
+            "aiMode": current_mode,
         }
 
 
@@ -153,11 +190,9 @@ async def create_reminder(data: ReminderCreate):
         due_at = datetime.fromisoformat(data.dueAt)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid dueAt ISO datetime")
-
     title = data.title.strip()
     if not title:
         raise HTTPException(status_code=400, detail="Empty title")
-
     r = reminder_store.create(title=title, due_at=due_at, repeat=data.repeat)
     state.push_alert(level="info", title="Reminder", message=f"Scheduled: {r.title}", ttl_seconds=15, meta={"reminderId": r.id})
     return {"success": True, "item": r.__dict__}
