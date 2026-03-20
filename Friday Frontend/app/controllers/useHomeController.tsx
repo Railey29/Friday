@@ -29,7 +29,6 @@ export type VisionStatus = {
   signLauncher: boolean;
 };
 
-// 3 AI modes
 export type AIMode = "general" | "search" | "command";
 
 export function useHomeController() {
@@ -55,6 +54,9 @@ export function useHomeController() {
   });
   const [aiMode, setAiModeState] = useState<AIMode>("general");
   const [isSearching, setIsSearching] = useState(false);
+
+  // ── Friday's spoken response (for typewriter display) ──
+  const [fridayResponse, setFridayResponse] = useState("");
 
   const recognitionRef = useRef<any>(null);
   const sendDelayTimerRef = useRef<any>(null);
@@ -99,12 +101,13 @@ export function useHomeController() {
               signLauncher: Boolean((data.vision as any).signLauncher),
             });
           }
-          // Don't sync aiMode from WebSocket — managed by cycleAIMode only
-          // to prevent double TTS trigger
-          // Sync search lock state
+          // Capture Friday's response for typewriter display
+          if (data.response && typeof data.response === "string") {
+            setFridayResponse(data.response);
+          }
+          // Don't sync aiMode from WebSocket to prevent double TTS
           if (typeof data.isSearching === "boolean") {
             setIsSearching(data.isSearching);
-            // Auto-stop listening when searching starts
             if (data.isSearching && recognitionRef.current) {
               recognitionRef.current.stop();
             }
@@ -167,11 +170,9 @@ export function useHomeController() {
     }
   };
 
-  // ── Cycle through 3 AI modes ──────────────────
   const cycleAIMode = async () => {
     const order: AIMode[] = ["general", "search", "command"];
     const next = order[(order.indexOf(aiMode) + 1) % order.length];
-    // Update UI optimistically
     setAiModeState(next);
     try {
       const res = await fetch(`${API_URL}/ai-mode`, {
@@ -180,11 +181,10 @@ export function useHomeController() {
         body: JSON.stringify({ mode: next }),
       });
       const data = await res.json();
-      // Sync with confirmed backend mode
       if (data.mode) setAiModeState(data.mode as AIMode);
     } catch (err) {
       console.error("Failed to cycle AI mode:", err);
-      setAiModeState(aiMode); // revert on error
+      setAiModeState(aiMode);
     }
   };
 
@@ -224,13 +224,10 @@ export function useHomeController() {
   const sendCommand = async (text: string) => {
     const trimmedText = text.trim();
     if (!trimmedText) return;
-
-    // Block if searching
     if (isSearching) {
       console.warn("Command blocked: Friday is searching");
       return;
     }
-
     try {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ text: trimmedText }));
@@ -241,14 +238,9 @@ export function useHomeController() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: trimmedText }),
       });
-      const textBody = await response.text();
-      if (!response.ok) {
-        console.warn(
-          "Command POST returned non-OK status",
-          response.status,
-          textBody,
-        );
-      }
+      // Capture response from HTTP fallback
+      const json = await response.json();
+      if (json.response) setFridayResponse(json.response);
     } catch (err) {
       console.error("Send command failed:", err);
     }
@@ -276,16 +268,13 @@ export function useHomeController() {
 
   const handleListen = () => {
     if (!isPoweredOn || !isMicOn || isSearching) return;
-
     const SpeechRecognition =
       (window as any).SpeechRecognition ||
       (window as any).webkitSpeechRecognition;
-
     if (!SpeechRecognition) {
       alert("Use Chrome browser (speech recognition not supported)");
       return;
     }
-
     if (recognitionRef.current) recognitionRef.current.stop();
 
     const recognition = new SpeechRecognition();
@@ -299,12 +288,10 @@ export function useHomeController() {
       setTranscript("");
       latestFinalTranscriptRef.current = "";
     };
-
     recognition.onend = () => {
       setIsListening(false);
       recognitionRef.current = null;
     };
-
     recognition.onerror = (event: any) => {
       console.error("Speech error:", event.error);
       setIsListening(false);
@@ -312,41 +299,33 @@ export function useHomeController() {
     };
 
     recognition.onresult = (event: any) => {
-      // Block voice input while searching
       if (isSearching) {
         recognition.stop();
         return;
       }
-
       let interimTranscript = "";
       let finalTranscript = "";
-
       for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) finalTranscript += transcript;
-        else interimTranscript += transcript;
+        const t = event.results[i][0].transcript;
+        if (event.results[i].isFinal) finalTranscript += t;
+        else interimTranscript += t;
       }
-
       if (interimTranscript) setTranscript(interimTranscript);
-
       if (finalTranscript) {
         const trimmedFinal = finalTranscript.trim();
         setTranscript(trimmedFinal);
         latestFinalTranscriptRef.current = trimmedFinal;
-
         if (sendDelayTimerRef.current) clearTimeout(sendDelayTimerRef.current);
         sendDelayTimerRef.current = setTimeout(() => {
           const commandToSend = latestFinalTranscriptRef.current;
           if (commandToSend && !isSearching) sendCommand(commandToSend);
         }, 1500);
-
         if (autoStopTimerRef.current) clearTimeout(autoStopTimerRef.current);
         autoStopTimerRef.current = setTimeout(() => {
           if (recognitionRef.current) recognitionRef.current.stop();
         }, 6000);
       }
     };
-
     recognition.start();
   };
 
@@ -360,6 +339,7 @@ export function useHomeController() {
     setTranscript("");
     latestFinalTranscriptRef.current = "";
   };
+  const clearFridayResponse = () => setFridayResponse("");
 
   useEffect(() => {
     return () => {
@@ -383,6 +363,7 @@ export function useHomeController() {
     stats,
     aiMode,
     isSearching,
+    fridayResponse,
     handleToggle,
     handleSpeak,
     handleListen,
@@ -394,5 +375,6 @@ export function useHomeController() {
     addReminderManual,
     deleteReminder,
     clearTranscript,
+    clearFridayResponse,
   } as const;
 }

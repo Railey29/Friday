@@ -43,6 +43,7 @@ type Controller = Readonly<{
   stats: Stats;
   aiMode: AIMode;
   isSearching: boolean;
+  fridayResponse: string;
   handleToggle: (t: "power" | "mic" | "volume") => void;
   handleSpeak: () => void;
   handleListen: () => void;
@@ -54,6 +55,7 @@ type Controller = Readonly<{
   addReminderManual: (title: string, dueAt: string) => void;
   deleteReminder: (id: string) => void;
   clearTranscript: () => void;
+  clearFridayResponse: () => void;
 }>;
 
 const THEME = {
@@ -64,12 +66,11 @@ const THEME = {
   bg: "#fdf8fb",
   accent: "#c8648a",
   pinkLight: "#f5e6ed",
-  general: "#4285f4", // blue — Gemini
-  search: "#e67e22", // orange — Search
-  command: "#2d7a4f", // green — Command
+  general: "#4285f4",
+  search: "#e67e22",
+  command: "#2d7a4f",
 };
 
-// ── AI Mode config ───────────────────────────
 const AI_MODE_CONFIG: Record<
   AIMode,
   { label: string; color: string; icon: React.ElementType; desc: string }
@@ -78,7 +79,7 @@ const AI_MODE_CONFIG: Record<
     label: "General AI",
     color: THEME.general,
     icon: Sparkles,
-    desc: "Gemini — full conversation + commands",
+    desc: "Gemini — conversation only",
   },
   search: {
     label: "Search AI",
@@ -246,6 +247,165 @@ const COMMAND_LIST = [
   },
 ];
 
+// ── Typewriter Component ─────────────────────────────────────
+function TypewriterText({
+  text,
+  speed = 28,
+  onDone,
+}: {
+  text: string;
+  speed?: number;
+  onDone?: () => void;
+}) {
+  const [displayed, setDisplayed] = useState("");
+  const [done, setDone] = useState(false);
+  const indexRef = useRef(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setDisplayed("");
+    setDone(false);
+    indexRef.current = 0;
+
+    if (!text) return;
+
+    const tick = () => {
+      if (indexRef.current < text.length) {
+        setDisplayed(text.slice(0, indexRef.current + 1));
+        indexRef.current++;
+        timerRef.current = setTimeout(tick, speed);
+      } else {
+        setDone(true);
+        onDone?.();
+      }
+    };
+
+    timerRef.current = setTimeout(tick, speed);
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [text, speed]);
+
+  return (
+    <span>
+      {displayed}
+      {!done && (
+        <span
+          style={{
+            display: "inline-block",
+            width: 2,
+            height: "1em",
+            background: THEME.accent,
+            marginLeft: 2,
+            animation: "blink-cursor 0.7s step-end infinite",
+            verticalAlign: "text-bottom",
+          }}
+        />
+      )}
+    </span>
+  );
+}
+
+// ── Friday Response Display ──────────────────────────────────
+function FridayResponsePanel({
+  response,
+  isSpeaking,
+  onClear,
+}: {
+  response: string;
+  isSpeaking: boolean;
+  onClear: () => void;
+}) {
+  if (!response && !isSpeaking) return null;
+
+  return (
+    <div
+      style={{
+        width: "100%",
+        border: `1px solid ${THEME.border}`,
+        borderLeft: `3px solid ${THEME.accent}`,
+        background: THEME.pinkLight,
+        borderRadius: 2,
+        padding: "14px 16px",
+        position: "relative",
+      }}
+    >
+      {/* Header */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 8,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span
+            style={{
+              fontFamily: "'Courier New', monospace",
+              fontSize: 9,
+              letterSpacing: 3,
+              textTransform: "uppercase",
+              color: THEME.accent,
+            }}
+          >
+            friday
+          </span>
+          {isSpeaking && (
+            <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
+              {[0, 1, 2].map((i) => (
+                <div
+                  key={i}
+                  style={{
+                    width: 3,
+                    height: 3,
+                    borderRadius: "50%",
+                    background: THEME.accent,
+                    animation: `bounce-dot 0.8s ease-in-out ${i * 0.15}s infinite`,
+                  }}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+        <button
+          onClick={onClear}
+          style={{
+            border: "none",
+            background: "transparent",
+            cursor: "pointer",
+            padding: 2,
+            display: "flex",
+            alignItems: "center",
+          }}
+        >
+          <X size={11} color={THEME.muted} />
+        </button>
+      </div>
+
+      {/* Typewriter text */}
+      <div
+        style={{
+          fontSize: 13,
+          color: THEME.ink,
+          lineHeight: 1.7,
+          fontFamily: "'Georgia', serif",
+          minHeight: 20,
+        }}
+      >
+        {response ? (
+          <TypewriterText text={response} speed={22} />
+        ) : (
+          <span style={{ color: THEME.muted, fontStyle: "italic" }}>
+            Processing...
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function formatAlertMessage(message: string): string {
   if (!message) return message;
   const singleMatch = message.match(/^(.+?)\s*@\s*([\d\-T:+.Z]+)$/);
@@ -274,6 +434,7 @@ function formatAlertMessage(message: string): string {
     (_, iso) => fmtIso(iso),
   );
 }
+
 function fmtIso(iso: string): string {
   try {
     return new Date(iso).toLocaleString("en-US", {
@@ -710,7 +871,6 @@ function CoreIndicator({
   searching: boolean;
 }) {
   const isAnimating = active && (speaking || listening || searching);
-  const dotColor = searching ? THEME.search : THEME.accent;
   return (
     <div
       style={{
@@ -861,7 +1021,6 @@ function ControlBtn({
   );
 }
 
-// ── AI Mode Badge (cycles through 3 modes on click) ──────────
 function AIModeBadge({
   mode,
   onClick,
@@ -902,7 +1061,6 @@ function AIModeBadge({
   );
 }
 
-// ── Search Lock Banner ───────────────────────────────────────
 function SearchingBanner() {
   return (
     <div
@@ -1226,7 +1384,6 @@ export default function HomeView(props: { controller: Controller }) {
                         : "offline"}
               </span>
             </div>
-            {/* AI Mode Badge — click to cycle */}
             <AIModeBadge
               mode={c.aiMode}
               onClick={c.cycleAIMode}
@@ -1234,7 +1391,6 @@ export default function HomeView(props: { controller: Controller }) {
             />
           </div>
 
-          {/* Search lock banner */}
           {c.isSearching && <SearchingBanner />}
 
           <CoreIndicator
@@ -1242,6 +1398,13 @@ export default function HomeView(props: { controller: Controller }) {
             speaking={c.isSpeaking}
             listening={c.isListening}
             searching={c.isSearching}
+          />
+
+          {/* ── Friday Response Panel (Typewriter) ── */}
+          <FridayResponsePanel
+            response={c.fridayResponse}
+            isSpeaking={c.isSpeaking}
+            onClear={c.clearFridayResponse}
           />
 
           <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
@@ -1278,7 +1441,6 @@ export default function HomeView(props: { controller: Controller }) {
             </ControlBtn>
           </div>
 
-          {/* Activate button — disabled while searching */}
           <button
             onClick={c.isListening ? c.handleStopListening : c.handleListen}
             disabled={c.isSearching}
@@ -1378,7 +1540,7 @@ export default function HomeView(props: { controller: Controller }) {
             )}
           </div>
 
-          {/* Manual command — disabled while searching */}
+          {/* Manual command */}
           <div style={{ width: "100%" }}>
             <div
               style={{
@@ -1423,7 +1585,6 @@ export default function HomeView(props: { controller: Controller }) {
                 <Send size={14} color={c.isSearching ? THEME.muted : "#fff"} />
               </button>
             </div>
-
             <button
               onClick={() => setShowCommands((v) => !v)}
               style={{
@@ -1449,7 +1610,6 @@ export default function HomeView(props: { controller: Controller }) {
               )}
               {showCommands ? "hide commands" : "show available commands"}
             </button>
-
             {showCommands && (
               <div
                 style={{
@@ -1874,6 +2034,7 @@ export default function HomeView(props: { controller: Controller }) {
         @keyframes expand-fade { 0% { transform: scale(1); opacity: 0.3; } 100% { transform: scale(1.15); opacity: 0; } }
         @keyframes bounce-dot { 0%, 80%, 100% { transform: translateY(0); } 40% { transform: translateY(-10px); } }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        @keyframes blink-cursor { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
         input:focus { border-color: ${THEME.ink} !important; outline: none; }
         button:hover:not(:disabled) { opacity: 0.85; }
       `}</style>
