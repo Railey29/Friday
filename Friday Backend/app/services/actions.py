@@ -300,19 +300,14 @@ def switch_window():             speak("Switching window, sir.");              t
 
 # ─────────────────────────────────────────────
 # Volume Controls
-# FIX: nircmd.exe not found → use PowerShell
-#      AudioDeviceCmdlets as primary,
-#      nircmd as optional fallback if in PATH
 # ─────────────────────────────────────────────
 
 def _get_current_volume_ps() -> int:
-    """Get current system volume via PowerShell (0-100)."""
     try:
         result = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command",
              "[Math]::Round((Get-CimInstance -ClassName Win32_SoundDevice | "
              "ForEach-Object { (New-Object -ComObject WScript.Shell).SendKeys([char]0xAD) } ) ; "
-             # fallback: use audio API via .NET
              "Add-Type -TypeDefinition '"
              "using System.Runtime.InteropServices;"
              "' ; "
@@ -321,16 +316,11 @@ def _get_current_volume_ps() -> int:
         )
     except Exception:
         pass
-    return 50  # safe default
+    return 50
 
 
 def _ps_volume_change(delta: int) -> bool:
-    """
-    Change volume by delta steps using PowerShell + Windows Audio API.
-    delta > 0 = up, delta < 0 = down.
-    Uses VolumeUp/VolumeDown virtual key presses — works on all Windows 10/11.
-    """
-    key = "0xAF" if delta > 0 else "0xAE"  # VK_VOLUME_UP / VK_VOLUME_DOWN
+    key = "0xAF" if delta > 0 else "0xAE"
     steps = abs(delta)
     script = (
         f"$wsh = New-Object -ComObject WScript.Shell; "
@@ -340,7 +330,6 @@ def _ps_volume_change(delta: int) -> bool:
 
 
 def _nircmd_volume_change(amount: int) -> bool:
-    """Try nircmd if available anywhere in PATH or common locations."""
     nircmd_paths = [
         "nircmd.exe",
         r"C:\Windows\nircmd.exe",
@@ -365,7 +354,6 @@ def volume_up():
     threading.Thread(target=_do_volume_up, daemon=True).start()
 
 def _do_volume_up():
-    # Try nircmd first (precise), fall back to VK key presses (2 steps ≈ 4%)
     if not _nircmd_volume_change(6554):
         _ps_volume_change(2)
 
@@ -392,13 +380,9 @@ def unmute():
 
 # ─────────────────────────────────────────────
 # Brightness Controls
-# FIX: EDIDParseError on Lenovo display →
-#      skip screen_brightness_control entirely,
-#      use WMI directly via PowerShell instead
 # ─────────────────────────────────────────────
 
 def _get_brightness_wmi() -> int:
-    """Get current brightness via WMI. Returns 0-100, default 50 on failure."""
     try:
         result = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command",
@@ -414,7 +398,6 @@ def _get_brightness_wmi() -> int:
 
 
 def _set_brightness_wmi(value: int) -> bool:
-    """Set brightness via WMI (0-100). Works even when EDID parse fails."""
     value = max(0, min(100, value))
     script = (
         f"(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods)"
@@ -427,10 +410,8 @@ def _set_brightness_wmi(value: int) -> bool:
 
 
 def _set_brightness_sbc(value: int) -> bool:
-    """Try screen_brightness_control — skip quietly if EDID error."""
     try:
         import screen_brightness_control as sbc
-        # sbc raises EDIDParseError on some Lenovo displays — catch it
         sbc.set_brightness(value, display=0)
         return True
     except Exception as e:
@@ -441,7 +422,6 @@ def _set_brightness_sbc(value: int) -> bool:
 def _brightness_up_worker():
     current = _get_brightness_wmi()
     new_val = min(current + 10, 100)
-    # Try WMI first (reliable), then sbc as secondary
     if not _set_brightness_wmi(new_val):
         _set_brightness_sbc(new_val)
 
@@ -474,8 +454,6 @@ def take_screenshot():
 
 def _do_screenshot(filename: str):
     os.makedirs(os.path.dirname(filename), exist_ok=True)
-
-    # Method 1: Pillow
     try:
         from PIL import ImageGrab
         ImageGrab.grab().save(filename)
@@ -486,7 +464,6 @@ def _do_screenshot(filename: str):
     except Exception as e:
         logger.warning("PIL screenshot failed: %s", e)
 
-    # Method 2: PowerShell (fixed — loads System.Drawing explicitly)
     escaped = filename.replace("\\", "\\\\")
     ok = _run_ps(
         f"Add-Type -AssemblyName System.Windows.Forms; "
@@ -573,6 +550,55 @@ def shutdown_friday():
     time.sleep(2)
     logger.info("FRIDAY backend shutdown initiated by user command.")
     os._exit(0)
+
+
+# ─────────────────────────────────────────────
+# Vision Functions
+# ─────────────────────────────────────────────
+
+def start_air_mouse():
+    try:
+        from app.services.vision.air_mouse import air_mouse
+        ok, msg = air_mouse.start()
+        if ok:
+            speak("Air Mouse started, sir. Use your index finger to move the cursor.")
+        else:
+            speak(f"Could not start Air Mouse, sir. {msg}")
+            state.push_alert(level="error", title="Air Mouse", message=msg, ttl_seconds=20)
+    except Exception as e:
+        speak("Sorry sir, Air Mouse encountered an error.")
+        state.push_alert(level="error", title="Air Mouse", message=str(e), ttl_seconds=20)
+
+def stop_air_mouse():
+    try:
+        from app.services.vision.air_mouse import air_mouse
+        air_mouse.stop()
+        speak("Air Mouse stopped, sir.")
+    except Exception as e:
+        speak("Sorry sir, could not stop Air Mouse.")
+        logger.error("stop_air_mouse error: %s", e)
+
+def start_sign_launcher():
+    try:
+        from app.services.vision.sign_launcher import sign_launcher
+        ok, msg = sign_launcher.start()
+        if ok:
+            speak("Sign Launcher started, sir. Show a hand gesture to launch apps.")
+        else:
+            speak(f"Could not start Sign Launcher, sir. {msg}")
+            state.push_alert(level="error", title="Sign Launcher", message=msg, ttl_seconds=20)
+    except Exception as e:
+        speak("Sorry sir, Sign Launcher encountered an error.")
+        state.push_alert(level="error", title="Sign Launcher", message=str(e), ttl_seconds=20)
+
+def stop_sign_launcher():
+    try:
+        from app.services.vision.sign_launcher import sign_launcher
+        sign_launcher.stop()
+        speak("Sign Launcher stopped, sir.")
+    except Exception as e:
+        speak("Sorry sir, could not stop Sign Launcher.")
+        logger.error("stop_sign_launcher error: %s", e)
 
 
 # ─────────────────────────────────────────────
@@ -763,6 +789,20 @@ COMMANDS: Dict[str, Callable] = {
     "ram usage":            get_ram,
     "memory":               get_ram,
 
+    # Vision ← ADDED
+    "start air mouse":      start_air_mouse,
+    "enable air mouse":     start_air_mouse,
+    "air mouse on":         start_air_mouse,
+    "stop air mouse":       stop_air_mouse,
+    "disable air mouse":    stop_air_mouse,
+    "air mouse off":        stop_air_mouse,
+    "start sign launcher":  start_sign_launcher,
+    "enable sign launcher": start_sign_launcher,
+    "sign launcher on":     start_sign_launcher,
+    "stop sign launcher":   stop_sign_launcher,
+    "disable sign launcher":stop_sign_launcher,
+    "sign launcher off":    stop_sign_launcher,
+
     # FRIDAY System
     "shutdown friday":      shutdown_friday,
 }
@@ -835,46 +875,24 @@ def _parse_and_execute_calendar(command_text: str) -> bool:
 def _parse_and_execute_vision(command_text: str) -> bool:
     tl = command_text.lower()
     if "air mouse" in tl or "airmouse" in tl:
-        try:
-            from app.services.vision.air_mouse import air_mouse
-            if any(k in tl for k in ("stop", "disable", "off")):
-                air_mouse.stop()
-                speak("Air Mouse stopped, sir.")
-            else:
-                ok, msg = air_mouse.start()
-                if not ok:
-                    state.push_alert(level="error", title="Air Mouse", message=msg, ttl_seconds=20)
-                    speak(f"Could not start Air Mouse, sir. {msg}")
-                else:
-                    speak("Air Mouse started, sir. Use your index finger to move the cursor.")
-            return True
-        except Exception as e:
-            state.push_alert(level="error", title="Air Mouse", message=str(e), ttl_seconds=20)
-            return True
+        if any(k in tl for k in ("stop", "disable", "off")):
+            stop_air_mouse()
+        else:
+            start_air_mouse()
+        return True
 
     if "sign launcher" in tl or "sign-language" in tl or "sign language" in tl:
-        try:
-            from app.services.vision.sign_launcher import sign_launcher
-            if any(k in tl for k in ("stop", "disable", "off")):
-                sign_launcher.stop()
-                speak("Sign Launcher stopped, sir.")
-            else:
-                ok, msg = sign_launcher.start()
-                if not ok:
-                    state.push_alert(level="error", title="Sign Launcher", message=msg, ttl_seconds=20)
-                    speak(f"Could not start Sign Launcher, sir. {msg}")
-                else:
-                    speak("Sign Launcher started, sir. Show a hand gesture to launch apps.")
-            return True
-        except Exception as e:
-            state.push_alert(level="error", title="Sign Launcher", message=str(e), ttl_seconds=20)
-            return True
+        if any(k in tl for k in ("stop", "disable", "off")):
+            stop_sign_launcher()
+        else:
+            start_sign_launcher()
+        return True
 
     return False
 
 
 # ─────────────────────────────────────────────
-# Silent Executor (for Gemini-powered responses)
+# Silent Executor (for Command AI)
 # ─────────────────────────────────────────────
 
 def _execute_command_silent(command_text: str) -> bool:
