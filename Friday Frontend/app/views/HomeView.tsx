@@ -16,12 +16,17 @@ import {
   ChevronUp,
   X,
   Info,
+  Cpu,
+  Sparkles,
+  Search,
+  Loader2,
 } from "lucide-react";
 import type { Stats } from "../models/status";
 import type {
   AlertItem,
   ReminderItem,
   VisionStatus,
+  AIMode,
 } from "../controllers/useHomeController";
 
 type Controller = Readonly<{
@@ -36,12 +41,15 @@ type Controller = Readonly<{
   reminders: ReminderItem[];
   vision: VisionStatus;
   stats: Stats;
+  aiMode: AIMode;
+  isSearching: boolean;
   handleToggle: (t: "power" | "mic" | "volume") => void;
   handleSpeak: () => void;
   handleListen: () => void;
   handleStopListening: () => void;
   toggleAirMouse: () => void;
   toggleSignLauncher: () => void;
+  cycleAIMode: () => void;
   sendCommand: (text: string) => void;
   addReminderManual: (title: string, dueAt: string) => void;
   deleteReminder: (id: string) => void;
@@ -56,6 +64,34 @@ const THEME = {
   bg: "#fdf8fb",
   accent: "#c8648a",
   pinkLight: "#f5e6ed",
+  general: "#4285f4", // blue — Gemini
+  search: "#e67e22", // orange — Search
+  command: "#2d7a4f", // green — Command
+};
+
+// ── AI Mode config ───────────────────────────
+const AI_MODE_CONFIG: Record<
+  AIMode,
+  { label: string; color: string; icon: React.ElementType; desc: string }
+> = {
+  general: {
+    label: "General AI",
+    color: THEME.general,
+    icon: Sparkles,
+    desc: "Gemini — full conversation + commands",
+  },
+  search: {
+    label: "Search AI",
+    color: THEME.search,
+    icon: Search,
+    desc: "Tavily + Local — search only",
+  },
+  command: {
+    label: "Command AI",
+    color: THEME.command,
+    icon: Cpu,
+    desc: "Direct system commands only",
+  },
 };
 
 const COMMAND_LIST = [
@@ -210,7 +246,6 @@ const COMMAND_LIST = [
   },
 ];
 
-// ── Alert helpers ────────────────────────────────────────────
 function formatAlertMessage(message: string): string {
   if (!message) return message;
   const singleMatch = message.match(/^(.+?)\s*@\s*([\d\-T:+.Z]+)$/);
@@ -252,7 +287,6 @@ function fmtIso(iso: string): string {
   }
 }
 
-// ── Modal base ───────────────────────────────────────────────
 const overlayStyle: React.CSSProperties = {
   position: "fixed",
   inset: 0,
@@ -429,7 +463,6 @@ function Tip({ children }: { children: React.ReactNode }) {
   );
 }
 
-// ── Air Mouse Modal ──────────────────────────────────────────
 function AirMouseModal({
   onClose,
   onToggle,
@@ -498,12 +531,7 @@ function AirMouseModal({
           />
           <Tip>
             <strong>Tip:</strong> Mag-ensure ng maliwanag na ilaw sa harapan mo
-            at walang masyadong galaw sa background para mas accurate ang hand
-            tracking.
-          </Tip>
-          <Tip>
-            <strong>Distansya:</strong> Hindi gumagana nang maayos kung
-            masyadong malayo o malapit sa camera. Subukan ang 40–50 cm.
+            at walang masyadong galaw sa background.
           </Tip>
           <button
             onClick={() => {
@@ -532,7 +560,6 @@ function AirMouseModal({
   );
 }
 
-// ── Sign Launcher Modal ──────────────────────────────────────
 function SignLauncherModal({
   onClose,
   onToggle,
@@ -603,24 +630,7 @@ function SignLauncherModal({
           />
           <Tip>
             <strong>Tip:</strong> Mag-practice muna ng isa-isa bago gamitin
-            tuloy-tuloy. Mas maganda kung iisa lang ang kamay na nakikita ng
-            camera.
-          </Tip>
-          <Tip>
-            <strong>Note:</strong> Ang mga sign na ito ay base sa default
-            config. Tingnan ang{" "}
-            <code
-              style={{
-                fontFamily: "'Courier New', monospace",
-                fontSize: 11,
-                background: THEME.border,
-                padding: "1px 4px",
-                borderRadius: 2,
-              }}
-            >
-              sign_launcher.py
-            </code>{" "}
-            para sa exact na mapping ng gestures sa iyong project.
+            tuloy-tuloy.
           </Tip>
           <button
             onClick={() => {
@@ -649,7 +659,6 @@ function SignLauncherModal({
   );
 }
 
-// ── Shared components ────────────────────────────────────────
 function BouncingDots({
   active,
   color = THEME.ink,
@@ -693,12 +702,15 @@ function CoreIndicator({
   active,
   speaking,
   listening,
+  searching,
 }: {
   active: boolean;
   speaking: boolean;
   listening: boolean;
+  searching: boolean;
 }) {
-  const isAnimating = active && (speaking || listening);
+  const isAnimating = active && (speaking || listening || searching);
+  const dotColor = searching ? THEME.search : THEME.accent;
   return (
     <div
       style={{
@@ -725,7 +737,7 @@ function CoreIndicator({
             width: 160,
             height: 160,
             borderRadius: "50%",
-            border: `1px solid ${active ? THEME.ink : THEME.border}`,
+            border: `1px solid ${active ? (searching ? THEME.search : THEME.ink) : THEME.border}`,
             transition: "border-color 0.6s ease",
           }}
         />
@@ -738,7 +750,9 @@ function CoreIndicator({
             border: `1px solid ${active ? THEME.faint : "transparent"}`,
             transition: "border-color 0.6s ease",
             animation:
-              listening && active ? "slow-spin 12s linear infinite" : "none",
+              (listening || searching) && active
+                ? "slow-spin 12s linear infinite"
+                : "none",
           }}
         />
         <div
@@ -746,7 +760,11 @@ function CoreIndicator({
             width: 28,
             height: 28,
             borderRadius: "50%",
-            background: active ? THEME.ink : THEME.faint,
+            background: active
+              ? searching
+                ? THEME.search
+                : THEME.ink
+              : THEME.faint,
             transition: "all 0.5s ease",
             animation: isAnimating
               ? "breathe 1.6s ease-in-out infinite"
@@ -767,11 +785,14 @@ function CoreIndicator({
         )}
       </div>
       <div style={{ height: 32 }}>
-        {speaking && <BouncingDots active color={THEME.accent} count={7} />}
-        {listening && !speaking && (
+        {searching && <BouncingDots active color={THEME.search} count={5} />}
+        {!searching && speaking && (
+          <BouncingDots active color={THEME.accent} count={7} />
+        )}
+        {!searching && listening && !speaking && (
           <BouncingDots active color={THEME.accent} count={5} />
         )}
-        {!listening && !speaking && (
+        {!searching && !listening && !speaking && (
           <BouncingDots active={false} color={THEME.muted} count={5} />
         )}
       </div>
@@ -781,18 +802,26 @@ function CoreIndicator({
           fontSize: 9,
           letterSpacing: 4,
           textTransform: "uppercase",
-          color: speaking ? THEME.accent : listening ? THEME.ink : THEME.muted,
+          color: searching
+            ? THEME.search
+            : speaking
+              ? THEME.accent
+              : listening
+                ? THEME.ink
+                : THEME.muted,
           transition: "color 0.4s ease",
           marginTop: -10,
         }}
       >
-        {speaking
-          ? "speaking"
-          : listening
-            ? "listening"
-            : active
-              ? "ready"
-              : "offline"}
+        {searching
+          ? "searching"
+          : speaking
+            ? "speaking"
+            : listening
+              ? "listening"
+              : active
+                ? "ready"
+                : "offline"}
       </div>
     </div>
   );
@@ -802,14 +831,17 @@ function ControlBtn({
   onClick,
   children,
   active,
+  disabled,
 }: {
   onClick: () => void;
   children: React.ReactNode;
   active?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
       style={{
         width: 44,
         height: 44,
@@ -819,7 +851,8 @@ function ControlBtn({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        cursor: "pointer",
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.4 : 1,
         transition: "all 0.2s ease",
       }}
     >
@@ -828,7 +861,82 @@ function ControlBtn({
   );
 }
 
-// ── Main View ────────────────────────────────────────────────
+// ── AI Mode Badge (cycles through 3 modes on click) ──────────
+function AIModeBadge({
+  mode,
+  onClick,
+  disabled,
+}: {
+  mode: AIMode;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  const cfg = AI_MODE_CONFIG[mode];
+  const Icon = cfg.icon;
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={`Current: ${cfg.desc}\nClick to cycle mode`}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "6px 12px",
+        border: `1px solid ${cfg.color}`,
+        borderRadius: 20,
+        background: "transparent",
+        cursor: disabled ? "not-allowed" : "pointer",
+        fontFamily: "'Courier New', monospace",
+        fontSize: 10,
+        letterSpacing: 2,
+        textTransform: "uppercase",
+        color: cfg.color,
+        transition: "all 0.2s ease",
+        opacity: disabled ? 0.5 : 1,
+      }}
+    >
+      <Icon size={12} color={cfg.color} />
+      {cfg.label}
+    </button>
+  );
+}
+
+// ── Search Lock Banner ───────────────────────────────────────
+function SearchingBanner() {
+  return (
+    <div
+      style={{
+        width: "100%",
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "10px 14px",
+        background: "#fff8f0",
+        border: `1px solid ${THEME.search}`,
+        borderRadius: 2,
+      }}
+    >
+      <Loader2
+        size={14}
+        color={THEME.search}
+        style={{ animation: "spin 1s linear infinite" }}
+      />
+      <span
+        style={{
+          fontFamily: "'Courier New', monospace",
+          fontSize: 10,
+          letterSpacing: 3,
+          textTransform: "uppercase",
+          color: THEME.search,
+        }}
+      >
+        Friday is searching — voice &amp; commands are temporarily disabled
+      </span>
+    </div>
+  );
+}
+
 export default function HomeView(props: { controller: Controller }) {
   const c = props.controller;
   const [time, setTime] = useState("");
@@ -861,7 +969,6 @@ export default function HomeView(props: { controller: Controller }) {
     .filter((a) => a?.id && !dismissed[a.id])
     .slice(-3)
     .reverse();
-
   const fmtDue = (iso: string) => {
     try {
       return new Date(iso).toLocaleString("en-US", {
@@ -876,7 +983,7 @@ export default function HomeView(props: { controller: Controller }) {
   };
 
   const handleManualCommand = () => {
-    if (!manualCmd.trim()) return;
+    if (!manualCmd.trim() || c.isSearching) return;
     c.sendCommand(manualCmd.trim());
     setManualCmd("");
   };
@@ -894,6 +1001,7 @@ export default function HomeView(props: { controller: Controller }) {
   };
 
   const handleCommandClick = (cmd: string) => {
+    if (c.isSearching) return;
     setManualCmd(cmd);
     setTimeout(() => {
       const input = cmdInputRef.current;
@@ -909,7 +1017,7 @@ export default function HomeView(props: { controller: Controller }) {
 
   const inputStyle: React.CSSProperties = {
     border: `1px solid ${THEME.border}`,
-    background: THEME.bg,
+    background: c.isSearching ? "#f5f5f5" : THEME.bg,
     padding: "10px 12px",
     fontSize: 12,
     color: THEME.ink,
@@ -917,6 +1025,7 @@ export default function HomeView(props: { controller: Controller }) {
     outline: "none",
     width: "100%",
     boxSizing: "border-box",
+    opacity: c.isSearching ? 0.6 : 1,
   };
   const alertBg = (l: string) =>
     ({ error: "#fff5f5", reminder: "#fff8f0", warning: "#fffbf0" })[l] ??
@@ -1033,6 +1142,7 @@ export default function HomeView(props: { controller: Controller }) {
       </div>
 
       <div style={{ width: "100%", maxWidth: 520 }}>
+        {/* Header */}
         <div style={{ marginBottom: 48, textAlign: "center" }}>
           <p
             style={{
@@ -1072,63 +1182,86 @@ export default function HomeView(props: { controller: Controller }) {
             background: "#fff",
           }}
         >
+          {/* Status row + AI Mode Badge */}
           <div
             style={{
               display: "flex",
               alignItems: "center",
-              gap: 8,
+              justifyContent: "space-between",
               width: "100%",
-              justifyContent: "center",
             }}
           >
-            <span
-              style={{
-                width: 6,
-                height: 6,
-                borderRadius: "50%",
-                background: c.isPoweredOn ? "#3a3a3a" : THEME.faint,
-                transition: "background 0.4s ease",
-              }}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  background: c.isPoweredOn
+                    ? c.isSearching
+                      ? THEME.search
+                      : "#3a3a3a"
+                    : THEME.faint,
+                  transition: "background 0.4s ease",
+                }}
+              />
+              <span
+                style={{
+                  fontSize: 10,
+                  letterSpacing: 4,
+                  color: c.isPoweredOn ? THEME.ink : THEME.muted,
+                  fontFamily: "'Courier New', monospace",
+                  textTransform: "uppercase",
+                  transition: "color 0.4s ease",
+                }}
+              >
+                {c.isSearching
+                  ? "searching"
+                  : c.isSpeaking
+                    ? "speaking"
+                    : c.isListening
+                      ? "listening"
+                      : c.isPoweredOn
+                        ? "online"
+                        : "offline"}
+              </span>
+            </div>
+            {/* AI Mode Badge — click to cycle */}
+            <AIModeBadge
+              mode={c.aiMode}
+              onClick={c.cycleAIMode}
+              disabled={c.isSearching}
             />
-            <span
-              style={{
-                fontSize: 10,
-                letterSpacing: 4,
-                color: c.isPoweredOn ? THEME.ink : THEME.muted,
-                fontFamily: "'Courier New', monospace",
-                textTransform: "uppercase",
-                transition: "color 0.4s ease",
-              }}
-            >
-              {c.isSpeaking
-                ? "speaking"
-                : c.isListening
-                  ? "listening"
-                  : c.isPoweredOn
-                    ? "online"
-                    : "offline"}
-            </span>
           </div>
+
+          {/* Search lock banner */}
+          {c.isSearching && <SearchingBanner />}
 
           <CoreIndicator
             active={c.isPoweredOn}
             speaking={c.isSpeaking}
             listening={c.isListening}
+            searching={c.isSearching}
           />
 
           <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
             <ControlBtn
               onClick={() => c.handleToggle("power")}
               active={c.isPoweredOn}
+              disabled={c.isSearching}
             >
-              <Power size={16} color={c.isPoweredOn ? "#fff" : THEME.muted} />
+              <Power
+                size={16}
+                color={c.isPoweredOn && !c.isSearching ? "#fff" : THEME.muted}
+              />
             </ControlBtn>
             <ControlBtn
               onClick={() => c.handleToggle("mic")}
               active={c.isMicOn}
+              disabled={c.isSearching}
             >
               {c.isMicOn ? (
-                <Mic size={16} color="#fff" />
+                <Mic size={16} color={c.isSearching ? THEME.muted : "#fff"} />
               ) : (
                 <MicOff size={16} color={THEME.muted} />
               )}
@@ -1145,24 +1278,38 @@ export default function HomeView(props: { controller: Controller }) {
             </ControlBtn>
           </div>
 
+          {/* Activate button — disabled while searching */}
           <button
             onClick={c.isListening ? c.handleStopListening : c.handleListen}
+            disabled={c.isSearching}
             style={{
               width: "100%",
               padding: "14px 0",
-              border: `1px solid ${c.isListening ? "#ccc" : THEME.ink}`,
+              border: `1px solid ${c.isSearching ? THEME.border : c.isListening ? "#ccc" : THEME.ink}`,
               borderRadius: 2,
-              background: c.isListening ? "transparent" : THEME.ink,
-              color: c.isListening ? THEME.muted : "#fff",
+              background: c.isSearching
+                ? THEME.bg
+                : c.isListening
+                  ? "transparent"
+                  : THEME.ink,
+              color: c.isSearching
+                ? THEME.muted
+                : c.isListening
+                  ? THEME.muted
+                  : "#fff",
               fontSize: 10,
               letterSpacing: 5,
               textTransform: "uppercase",
               fontFamily: "'Courier New', monospace",
-              cursor: "pointer",
+              cursor: c.isSearching ? "not-allowed" : "pointer",
               transition: "all 0.3s ease",
             }}
           >
-            {c.isListening ? "terminate" : "activate"}
+            {c.isSearching
+              ? "searching..."
+              : c.isListening
+                ? "terminate"
+                : "activate"}
           </button>
 
           {/* Speech to text */}
@@ -1186,7 +1333,7 @@ export default function HomeView(props: { controller: Controller }) {
               >
                 speech-to-text
               </div>
-              {!!c.transcript && (
+              {!!c.transcript && !c.isSearching && (
                 <button
                   onClick={c.clearTranscript}
                   style={{
@@ -1210,26 +1357,28 @@ export default function HomeView(props: { controller: Controller }) {
             </div>
             <div
               style={{
-                border: `1px solid ${c.isListening ? THEME.ink : THEME.border}`,
-                background: THEME.bg,
+                border: `1px solid ${c.isListening && !c.isSearching ? THEME.ink : THEME.border}`,
+                background: c.isSearching ? "#f9f9f9" : THEME.bg,
                 padding: "10px 12px",
                 fontSize: 12,
-                color: THEME.ink,
+                color: c.isSearching ? THEME.muted : THEME.ink,
                 minHeight: 42,
                 whiteSpace: "pre-wrap",
                 transition: "border-color 0.3s ease",
               }}
             >
-              {c.transcript || (c.isListening ? "Listening…" : "—")}
+              {c.isSearching
+                ? "🔍 Searching..."
+                : c.transcript || (c.isListening ? "Listening…" : "—")}
             </div>
-            {!!c.lastCommand && (
+            {!!c.lastCommand && !c.isSearching && (
               <div style={{ marginTop: 8, fontSize: 11, color: THEME.muted }}>
                 Last command: {c.lastCommand}
               </div>
             )}
           </div>
 
-          {/* Manual command */}
+          {/* Manual command — disabled while searching */}
           <div style={{ width: "100%" }}>
             <div
               style={{
@@ -1247,25 +1396,31 @@ export default function HomeView(props: { controller: Controller }) {
               <input
                 ref={cmdInputRef}
                 value={manualCmd}
-                onChange={(e) => setManualCmd(e.target.value)}
+                onChange={(e) => !c.isSearching && setManualCmd(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleManualCommand()}
-                placeholder='Type a command, e.g. "open youtube"'
+                placeholder={
+                  c.isSearching
+                    ? "Searching... please wait"
+                    : 'Type a command, e.g. "open youtube"'
+                }
+                disabled={c.isSearching}
                 style={{ ...inputStyle, flex: 1 }}
               />
               <button
                 onClick={handleManualCommand}
+                disabled={c.isSearching}
                 style={{
                   padding: "10px 14px",
-                  border: `1px solid ${THEME.ink}`,
+                  border: `1px solid ${c.isSearching ? THEME.border : THEME.ink}`,
                   borderRadius: 2,
-                  background: THEME.ink,
-                  color: "#fff",
-                  cursor: "pointer",
+                  background: c.isSearching ? THEME.bg : THEME.ink,
+                  color: c.isSearching ? THEME.muted : "#fff",
+                  cursor: c.isSearching ? "not-allowed" : "pointer",
                   display: "flex",
                   alignItems: "center",
                 }}
               >
-                <Send size={14} color="#fff" />
+                <Send size={14} color={c.isSearching ? THEME.muted : "#fff"} />
               </button>
             </div>
 
@@ -1309,7 +1464,6 @@ export default function HomeView(props: { controller: Controller }) {
                   gap: 16,
                 }}
               >
-                {/* ── Wake Word Notice ── */}
                 <div
                   style={{
                     border: `1px solid ${THEME.accent}`,
@@ -1326,7 +1480,6 @@ export default function HomeView(props: { controller: Controller }) {
                       marginBottom: 8,
                     }}
                   >
-                    {/* small lock/key icon using unicode */}
                     <span style={{ fontSize: 13 }}>🔑</span>
                     <span
                       style={{
@@ -1351,11 +1504,8 @@ export default function HomeView(props: { controller: Controller }) {
                     }}
                   >
                     Prior to issuing any voice command, FRIDAY must first be
-                    addressed by its designated wake phrase. This initiates the
-                    system&apos;s active listening session.
+                    addressed by its designated wake phrase.
                   </p>
-
-                  {/* Wake word chip */}
                   <div
                     style={{
                       marginTop: 10,
@@ -1389,116 +1539,11 @@ export default function HomeView(props: { controller: Controller }) {
                         letterSpacing: 3,
                         textTransform: "uppercase",
                       }}
-                      title="Click to use as command"
                     >
                       hey friday
                     </button>
                   </div>
-
-                  {/* Usage example */}
-                  <div
-                    style={{
-                      marginTop: 12,
-                      borderTop: `1px solid ${THEME.border}`,
-                      paddingTop: 10,
-                    }}
-                  >
-                    <div
-                      style={{
-                        fontFamily: "'Courier New', monospace",
-                        fontSize: 9,
-                        letterSpacing: 3,
-                        textTransform: "uppercase",
-                        color: THEME.muted,
-                        marginBottom: 6,
-                      }}
-                    >
-                      Correct invocation sequence
-                    </div>
-                    <div
-                      style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 4,
-                      }}
-                    >
-                      {[
-                        {
-                          step: "01",
-                          label: "Initiate session",
-                          cmd: "hey friday",
-                        },
-                        {
-                          step: "02",
-                          label: "Issue command",
-                          cmd: "open youtube",
-                        },
-                      ].map(({ step, label, cmd }) => (
-                        <div
-                          key={step}
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 8,
-                          }}
-                        >
-                          <span
-                            style={{
-                              fontFamily: "'Courier New', monospace",
-                              fontSize: 9,
-                              color: THEME.muted,
-                              letterSpacing: 2,
-                              minWidth: 20,
-                            }}
-                          >
-                            {step}
-                          </span>
-                          <span
-                            style={{
-                              fontSize: 11,
-                              color: THEME.muted,
-                              fontFamily: "'Georgia', serif",
-                              minWidth: 110,
-                            }}
-                          >
-                            {label}
-                          </span>
-                          <code
-                            style={{
-                              fontFamily: "'Courier New', monospace",
-                              fontSize: 11,
-                              background: "#fff",
-                              border: `1px solid ${THEME.border}`,
-                              padding: "2px 8px",
-                              borderRadius: 2,
-                              color: THEME.ink,
-                            }}
-                          >
-                            {cmd}
-                          </code>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Note about manual command */}
-                  <div
-                    style={{
-                      marginTop: 10,
-                      fontSize: 11,
-                      color: THEME.muted,
-                      fontFamily: "'Georgia', serif",
-                      lineHeight: 1.5,
-                      fontStyle: "italic",
-                    }}
-                  >
-                    Note: The wake phrase is only required for voice input.
-                    Manual commands submitted via the text field above are
-                    processed immediately without a prior invocation.
-                  </div>
                 </div>
-
-                {/* ── Command categories ── */}
                 {COMMAND_LIST.map((group) => (
                   <div key={group.category}>
                     <div
@@ -1529,11 +1574,6 @@ export default function HomeView(props: { controller: Controller }) {
                             color: cmd.includes("<") ? THEME.accent : THEME.ink,
                             transition: "all 0.15s ease",
                           }}
-                          title={
-                            cmd.includes("<")
-                              ? "Click to fill in template"
-                              : `Click to use: ${cmd}`
-                          }
                         >
                           {cmd}
                         </button>
@@ -1743,7 +1783,6 @@ export default function HomeView(props: { controller: Controller }) {
               </button>
               <button
                 onClick={() => setShowAirMouseModal(true)}
-                title="How to use Air Mouse"
                 style={{
                   padding: "0 11px",
                   border: `1px solid ${THEME.border}`,
@@ -1790,7 +1829,6 @@ export default function HomeView(props: { controller: Controller }) {
               </button>
               <button
                 onClick={() => setShowSignModal(true)}
-                title="How to use Sign Launcher"
                 style={{
                   padding: "0 11px",
                   border: `1px solid ${THEME.border}`,
@@ -1826,7 +1864,7 @@ export default function HomeView(props: { controller: Controller }) {
             textTransform: "uppercase",
           }}
         >
-          voice interface
+          voice interface · {AI_MODE_CONFIG[c.aiMode].label.toLowerCase()}
         </p>
       </div>
 
@@ -1835,8 +1873,9 @@ export default function HomeView(props: { controller: Controller }) {
         @keyframes breathe { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.4); opacity: 0.6; } }
         @keyframes expand-fade { 0% { transform: scale(1); opacity: 0.3; } 100% { transform: scale(1.15); opacity: 0; } }
         @keyframes bounce-dot { 0%, 80%, 100% { transform: translateY(0); } 40% { transform: translateY(-10px); } }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         input:focus { border-color: ${THEME.ink} !important; outline: none; }
-        button:hover { opacity: 0.85; }
+        button:hover:not(:disabled) { opacity: 0.85; }
       `}</style>
     </div>
   );

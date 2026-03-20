@@ -29,6 +29,9 @@ export type VisionStatus = {
   signLauncher: boolean;
 };
 
+// 3 AI modes
+export type AIMode = "general" | "search" | "command";
+
 export function useHomeController() {
   const [isPoweredOn, setIsPoweredOn] = useState(true);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -50,6 +53,8 @@ export function useHomeController() {
     connectivity: "Strong",
     uptime: "0h 0m",
   });
+  const [aiMode, setAiModeState] = useState<AIMode>("general");
+  const [isSearching, setIsSearching] = useState(false);
 
   const recognitionRef = useRef<any>(null);
   const sendDelayTimerRef = useRef<any>(null);
@@ -57,6 +62,19 @@ export function useHomeController() {
   const latestFinalTranscriptRef = useRef<string>("");
   const wsRef = useRef<WebSocket | null>(null);
 
+  // Fetch initial AI mode
+  useEffect(() => {
+    fetch(`${API_URL}/ai-mode`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (["general", "search", "command"].includes(d.mode)) {
+          setAiModeState(d.mode as AIMode);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // WebSocket
   useEffect(() => {
     try {
       const apiUrl = new URL(API_URL);
@@ -81,16 +99,24 @@ export function useHomeController() {
               signLauncher: Boolean((data.vision as any).signLauncher),
             });
           }
+          // Don't sync aiMode from WebSocket — managed by cycleAIMode only
+          // to prevent double TTS trigger
+          // Sync search lock state
+          if (typeof data.isSearching === "boolean") {
+            setIsSearching(data.isSearching);
+            // Auto-stop listening when searching starts
+            if (data.isSearching && recognitionRef.current) {
+              recognitionRef.current.stop();
+            }
+          }
         } catch {
           // ignore parse errors
         }
       };
 
       ws.onclose = () => {
-        console.log("WebSocket disconnected");
         wsRef.current = null;
       };
-
       ws.onerror = (e) => console.warn("WebSocket error", e);
 
       return () => {
@@ -141,6 +167,27 @@ export function useHomeController() {
     }
   };
 
+  // ── Cycle through 3 AI modes ──────────────────
+  const cycleAIMode = async () => {
+    const order: AIMode[] = ["general", "search", "command"];
+    const next = order[(order.indexOf(aiMode) + 1) % order.length];
+    // Update UI optimistically
+    setAiModeState(next);
+    try {
+      const res = await fetch(`${API_URL}/ai-mode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: next }),
+      });
+      const data = await res.json();
+      // Sync with confirmed backend mode
+      if (data.mode) setAiModeState(data.mode as AIMode);
+    } catch (err) {
+      console.error("Failed to cycle AI mode:", err);
+      setAiModeState(aiMode); // revert on error
+    }
+  };
+
   const handleSpeak = async () => {
     if (!isPoweredOn || !isVolumeOn) return;
     try {
@@ -174,12 +221,16 @@ export function useHomeController() {
     }
   };
 
-  // ─────────────────────────────────────────────
-  // Send Command — WebSocket or HTTP fallback
-  // ─────────────────────────────────────────────
   const sendCommand = async (text: string) => {
     const trimmedText = text.trim();
     if (!trimmedText) return;
+
+    // Block if searching
+    if (isSearching) {
+      console.warn("Command blocked: Friday is searching");
+      return;
+    }
+
     try {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ text: trimmedText }));
@@ -203,9 +254,6 @@ export function useHomeController() {
     }
   };
 
-  // ─────────────────────────────────────────────
-  // Add Reminder Manually
-  // ─────────────────────────────────────────────
   const addReminderManual = async (title: string, dueAt: string) => {
     try {
       await fetch(`${API_URL}/reminders`, {
@@ -218,9 +266,6 @@ export function useHomeController() {
     }
   };
 
-  // ─────────────────────────────────────────────
-  // Delete Reminder
-  // ─────────────────────────────────────────────
   const deleteReminder = async (id: string) => {
     try {
       await fetch(`${API_URL}/reminders/${id}`, { method: "DELETE" });
@@ -230,7 +275,7 @@ export function useHomeController() {
   };
 
   const handleListen = () => {
-    if (!isPoweredOn || !isMicOn) return;
+    if (!isPoweredOn || !isMicOn || isSearching) return;
 
     const SpeechRecognition =
       (window as any).SpeechRecognition ||
@@ -241,15 +286,12 @@ export function useHomeController() {
       return;
     }
 
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-    }
+    if (recognitionRef.current) recognitionRef.current.stop();
 
     const recognition = new SpeechRecognition();
     recognition.lang = "en-PH";
     recognition.continuous = true;
     recognition.interimResults = true;
-
     recognitionRef.current = recognition;
 
     recognition.onstart = () => {
@@ -270,16 +312,19 @@ export function useHomeController() {
     };
 
     recognition.onresult = (event: any) => {
+      // Block voice input while searching
+      if (isSearching) {
+        recognition.stop();
+        return;
+      }
+
       let interimTranscript = "";
       let finalTranscript = "";
 
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalTranscript += transcript;
-        } else {
-          interimTranscript += transcript;
-        }
+        if (event.results[i].isFinal) finalTranscript += transcript;
+        else interimTranscript += transcript;
       }
 
       if (interimTranscript) setTranscript(interimTranscript);
@@ -292,7 +337,7 @@ export function useHomeController() {
         if (sendDelayTimerRef.current) clearTimeout(sendDelayTimerRef.current);
         sendDelayTimerRef.current = setTimeout(() => {
           const commandToSend = latestFinalTranscriptRef.current;
-          if (commandToSend) sendCommand(commandToSend);
+          if (commandToSend && !isSearching) sendCommand(commandToSend);
         }, 1500);
 
         if (autoStopTimerRef.current) clearTimeout(autoStopTimerRef.current);
@@ -336,12 +381,15 @@ export function useHomeController() {
     reminders,
     vision,
     stats,
+    aiMode,
+    isSearching,
     handleToggle,
     handleSpeak,
     handleListen,
     handleStopListening,
     toggleAirMouse,
     toggleSignLauncher,
+    cycleAIMode,
     sendCommand,
     addReminderManual,
     deleteReminder,
